@@ -1,0 +1,71 @@
+# ============================================================
+# 依赖清单 —— Track A 已验证环境
+# 验证环境：Windows / Python 3.13.14
+# 详细步骤见同目录《环境搭建说明.md》
+# ============================================================
+#
+# 【重要：本文件不包含 torch，请按下列顺序操作】
+#
+#   ① 先单独装 PyTorch（必须排在前面，否则 pip 会拉一个不匹配显卡驱动的版本）
+#        GPU 机器（CUDA 版本按你的驱动选，这里是 cu124 示例）：
+#            pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu124
+#        CPU 机器（本地写代码/调试用，约 115 MB）：
+#            pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
+#        国内直连不通时走阿里镜像（注意必须用 -f，不能用 -i）：
+#            pip install torch==2.11.0+cpu --no-deps --no-index -f https://mirrors.aliyun.com/pytorch-wheels/cpu/
+#
+#   ② 再装本文件（必须用阿里源：adapters / adapter-transformers 清华源没有）
+#            pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+#
+# ============================================================
+
+# ---- 核心：适配器与模型 ----
+adapter-transformers==4.0.0
+adapters==1.3.0
+transformers==4.57.6
+huggingface_hub==0.36.2
+tokenizers==0.22.2
+safetensors==0.8.0
+
+# ---- 训练与评估（缺任何一个都会在运行时直接报错）----
+accelerate==1.15.0          # Trainer 的强制依赖
+scikit-learn==1.9.1         # 计算 macro_f1 等指标
+scipy==1.18.1
+joblib==1.6.0
+threadpoolctl==3.7.0
+
+# ---- 数值计算 ----
+numpy==2.5.3
+sympy==1.14.0
+mpmath==1.3.0
+networkx==3.6.1
+
+# ---- 模板与配置 ----
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+PyYAML==6.0.3
+packaging==26.3
+
+# ---- 文件与文本处理 ----
+filelock==4.0.1
+fsspec==2026.9.0
+regex==2026.9.10
+typing_extensions==4.16.0
+setuptools==81.0.0
+
+# ---- 网络与杂项 ----
+requests==2.34.2
+urllib3==2.8.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+idna==3.20
+tqdm==4.70.1
+colorama==0.4.6
+psutil==7.2.2
+cloudpickle==3.1.2
+narwhals==2.26.0
+
+# ============================================================
+# 本机验证环境的 torch 版本（供参考，不要照抄到 GPU 机器）
+#     torch==2.11.0+cpu
+# ============================================================
