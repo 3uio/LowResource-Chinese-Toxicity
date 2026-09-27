@@ -1,0 +1,35 @@
+# ============================================================
+# 模式 ②：Adapter（V2 三条微调分支里的「消融分支」）
+# 冻结底座，只在每层插一小块可训练网络 → 只训练它
+# 实测：可训练参数仅占 0.83%，训练速度快约 5 倍
+# ============================================================
+
+exp_name: adapter
+mode: adapter                 # ← 切换模式就改这一行
+
+# ---- 模型 ----
+backbone: .model_cache/xlm-roberta-base
+task_adapter_name: task
+reduction_factor: 16          # 适配器压缩比例，越大那块网络越小
+num_labels: 2
+head_name: toxic
+
+# ---- 数据 ----
+# train → 训练；dev → 主评估集（调参用）；test → 最终评测（如 COLD/ToxiCN 官方 test、表5 外部基准）
+# 三者都给了就会「训完 → 在 dev 上评 → 再在 test 上评」，结果分开存，互不覆盖。
+# test_file 可以留空（那就只评 dev），按需要决定要不要保留 test 段。
+train_file: 框架开发/data/demo_train.jsonl
+dev_file: 框架开发/data/demo_dev.jsonl
+test_file: 框架开发/data/demo_test.jsonl
+
+max_length: 64
+
+# ---- 训练 ----
+epochs: 2
+batch_size: 4
+learning_rate: 1.0e-4
+seed: 42
+cpu: true
+
+# ---- 输出 ----
+runs_dir: runs

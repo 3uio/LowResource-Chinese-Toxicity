@@ -1,0 +1,37 @@
+# ============================================================
+# 只推理、不训练（eval_only）
+#
+# 用途：zero-shot / 拿现成模型直接在数据上跑前向这类实验。
+#       本项目对应的典型场景：
+#         - B 的 XLM-R zero-shot 测速（随机分类头 + 只读表5）
+#         - 加载别人训好的 checkpoint 直接在中文数据上评
+#
+# 与训练配置的区别只有一行：eval_only: true
+#   1. 不调用训练，直接进评估
+#   2. train_file 可以不填
+#   3. 必须至少有 dev_file 或 test_file（否则无数据可评）
+#
+# ⚠️ 注意：这里是「随机初始化的分类头 + 不训练」，所以指标没有意义，
+#    只能用来验证链路 / 测吞吐。这正是 zero-shot 测速要的形式。
+# ============================================================
+
+exp_name: zero_shot_demo
+mode: full_ft                  # eval_only 下 mode 只决定"模型怎么组装"
+eval_only: true                # ← 只推理不训练
+
+# ---- 模型 ----
+backbone: .model_cache/xlm-roberta-base
+num_labels: 2
+head_name: toxic
+
+# ---- 数据（不需要 train_file）----
+dev_file: 框架开发/data/demo_dev.jsonl
+test_file: 框架开发/data/demo_test.jsonl
+
+max_length: 64
+batch_size: 4
+seed: 42
+cpu: true
+
+# ---- 输出 ----
+runs_dir: runs

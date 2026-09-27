@@ -1,0 +1,48 @@
+# ============================================================
+# 模式 ③ 的 TLR 版：MAD-X + 语言适配器交替
+#
+# 与原版 madx.yaml 的唯一区别：tlr: true
+#
+# 解决的问题（training-inference mismatch）：
+#   原版 MAD-X 训练任务适配器时，它只见过「源语言 LA」（英语）；
+#   推理时才换成「目标语言 LA」（中文）→ 两者从没配合过，效果掉，
+#   而且训练过程中完全看不出来。
+#
+# TLR 的做法（Parović et al., Findings of ACL 2023）：
+#   训练时就让两者轮流上场 —— 第 n 个训练步使用
+#       la_names[n % (K+1)] 这一层 LA
+#   本项目只有中文一个目标语言（K=1）→ 槽位 = [源语言, 目标语言]
+#   → 即「英语 ↔ 中文」逐步交替。
+#
+# 注意：交替只改「垫在下面的是哪层 LA」，语言适配器本身全程冻结，
+#       训练的还是任务适配器（约 0.8% 参数）。
+# ============================================================
+
+exp_name: madx_tlr
+mode: madx                    # ← 切换模式就改这一行
+
+# ---- 模型 ----
+backbone: .model_cache/xlm-roberta-base
+language_adapter: .model_cache/xlm-roberta-base-zh-wiki_pfeiffer          # 目标语言层（中文）
+source_language_adapter: .model_cache/xlm-roberta-base-en-wiki_pfeiffer   # 源语言层（英语）
+tlr: true                     # ← 打开交替；改成 false 就等于原版 madx.yaml
+task_adapter_name: task
+reduction_factor: 16
+num_labels: 2
+head_name: toxic
+
+# ---- 数据 ----
+train_file: 框架开发/data/demo_train.jsonl
+dev_file: 框架开发/data/demo_dev.jsonl
+
+max_length: 64
+
+# ---- 训练 ----
+epochs: 2
+batch_size: 4
+learning_rate: 1.0e-4
+seed: 42
+cpu: true
+
+# ---- 输出 ----
+runs_dir: runs

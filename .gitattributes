@@ -1,0 +1,53 @@
+# ============================================================
+# 换行符规范（.gitattributes）
+#
+# 为什么需要这个文件：
+#   git 在 Windows 上默认会把换行符自动转换（core.autocrlf=true），
+#   Linux / macOS 上不转。同一个仓库在不同系统 clone 出来内容会不一致，
+#   表现为「明明没改过，git status 却显示一堆文件被修改」，
+#   也会让不同人跑出不同结果。
+#
+# 这里的做法：文本文件在仓库里和检出时都统一用 LF，
+#   保证任何系统、任何 git 配置拿到的内容都一样。
+# ============================================================
+
+# 默认：自动识别文本文件，统一用 LF（跨平台一致）
+* text=auto eol=lf
+
+# 常见文本类型，明确指定 LF
+*.py    text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+*.json  text eol=lf
+*.jsonl text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.toml  text eol=lf
+*.cfg   text eol=lf
+*.ini   text eol=lf
+
+# Windows 专用脚本保持 CRLF，否则部分环境会执行异常
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制文件：不做任何换行符转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.docx  binary
+*.xlsx  binary
+*.pptx  binary
+*.zip   binary
+*.gz    binary
+*.bin   binary
+*.pt    binary
+*.pth   binary
+*.ckpt  binary
+*.safetensors binary
+
+# 语言识别标记（GitHub 统计语言占比时不会数错）
+*.jsonl linguist-language=JSON
