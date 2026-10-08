@@ -1,0 +1,1 @@
+source_id,variant_id,text,attack_family,attack_type,secondary_attack_types,is_adversarial,generation_method,generation_rule_id,recoverability,semantic_score_raw,semantic_score_normalized,quality_pass,qc_reviewer_1,qc_reviewer_2,qc_arbiter,split
