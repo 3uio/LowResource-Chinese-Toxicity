@@ -33,6 +33,8 @@ TRAIN = os.path.join(HERE, "train.py")
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="批量跑多个随机种子")
     ap.add_argument("--config", required=True, help="yaml 配置文件路径")
     ap.add_argument("--seeds", type=int, nargs="+", required=True, help="要跑的种子，如 --seeds 1 2 3")
@@ -57,7 +59,8 @@ def main():
         if args.exp_name:
             cmd += ["--exp-name", args.exp_name]
         p = subprocess.run(cmd, cwd=PROJ, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace",
+                           env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         if p.stdout:
             print(p.stdout, end="")
         if p.returncode != 0:

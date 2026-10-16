@@ -7,15 +7,16 @@
 # 【重要：本文件不包含 torch，请按下列顺序操作】
 #
 #   ① 先单独装 PyTorch（必须排在前面，否则 pip 会拉一个不匹配显卡驱动的版本）
-#        GPU 机器（CUDA 版本按你的驱动选，这里是 cu124 示例）：
-#            pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu124
+#        GPU 机器：优先使用云平台已验证的 CUDA/PyTorch 镜像。
+#        不要把本地 CPU 版本或未核验的 CUDA wheel 命令直接套到服务器。
 #        CPU 机器（本地写代码/调试用，约 115 MB）：
 #            pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cpu
 #        国内直连不通时走阿里镜像（注意必须用 -f，不能用 -i）：
 #            pip install torch==2.11.0+cpu --no-deps --no-index -f https://mirrors.aliyun.com/pytorch-wheels/cpu/
 #
-#   ② 再装本文件（必须用阿里源：adapters / adapter-transformers 清华源没有）
-#            pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+#   ② 从仓库根目录安装本文件，镜像缺包时切换 PyPI 或其他同步完整的源。
+#            python -m pip install -r 框架开发/requirements.txt
+#      仅跑 DAPT 时使用 requirements-dapt.txt，不必安装分类依赖。
 #
 # ============================================================
 
@@ -52,6 +53,7 @@ fsspec==2026.9.0
 regex==2026.9.10
 typing_extensions==4.16.0
 setuptools==81.0.0
+zhconv==1.4.3              # 跨表归一化；缺失时必须报错，禁止退化为不转繁简
 
 # ---- 网络与杂项 ----
 requests==2.34.2

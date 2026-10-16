@@ -21,7 +21,13 @@ def read_jsonl(path):
             obj = json.loads(line)
             if "text" not in obj or "label" not in obj:
                 raise ValueError("%s 第 %d 行缺少 text 或 label 字段" % (path, i + 1))
+            if not isinstance(obj["text"], str) or not obj["text"].strip():
+                raise ValueError("%s 第 %d 行 text 必须为非空字符串" % (path, i + 1))
+            if type(obj["label"]) is not int or obj["label"] not in (0, 1):
+                raise ValueError("%s 第 %d 行 label 必须为整数 0/1" % (path, i + 1))
             rows.append(obj)
+    if not rows:
+        raise ValueError("数据文件为空：" + str(path))
     return rows
 
 
@@ -60,4 +66,20 @@ def load_datasets(cfg, tokenizer):
         out[split] = ToxicDataset(rows, tokenizer,
                                   max_length=cfg.max_length,
                                   head_name=cfg.head_name)
+    from .isolation import normalized_hash
+    seen = {}
+    for split, dataset in out.items():
+        if dataset is None:
+            continue
+        for row in dataset.rows:
+            keys = [("text", normalized_hash(row["text"]))]
+            # 原句和扰动可能不同文，必须额外检查家族主键。
+            for field in ("source_id", "seed_normalized_hash", "group_id"):
+                if row.get(field):
+                    keys.append((field, str(row[field])))
+            for key in keys:
+                previous = seen.get(key)
+                if previous is not None and previous != split:
+                    raise ValueError("跨 split 重复文本/家族：%s 与 %s（%s）" % (previous, split, key[0]))
+                seen[key] = split
     return out

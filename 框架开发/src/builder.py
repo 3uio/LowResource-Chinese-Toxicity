@@ -109,8 +109,14 @@ class BuildResult:
 
 def build_model(cfg):
     """按 cfg.mode 组装模型，返回 BuildResult"""
-    model = AutoAdapterModel.from_pretrained(cfg.backbone_path)
-    model.add_classification_head(cfg.head_name, num_labels=cfg.num_labels)
+    from .config import abspath
+    model = AutoAdapterModel.from_pretrained(abspath(cfg.model_checkpoint) if cfg.model_checkpoint else cfg.backbone_path)
+    if cfg.head_name not in model.heads:
+        if cfg.model_checkpoint:
+            raise ValueError("已保存模型缺少分类头：%s" % cfg.head_name)
+        model.add_classification_head(cfg.head_name, num_labels=cfg.num_labels)
+    elif model.heads[cfg.head_name].config["num_labels"] != cfg.num_labels:
+        raise ValueError("已有分类头的 num_labels 与配置不一致")
 
     if cfg.mode == "full_ft":
         # ---- 模式 ①：全参数微调 ----
@@ -121,7 +127,8 @@ def build_model(cfg):
     if cfg.mode == "adapter":
         # ---- 模式 ②：Adapter ----
         task_cfg = AdapterConfig.load("pfeiffer", reduction_factor=cfg.reduction_factor)
-        model.add_adapter(cfg.task_adapter_name, config=task_cfg)
+        if not cfg.model_checkpoint:
+            model.add_adapter(cfg.task_adapter_name, config=task_cfg)
         model.train_adapter(cfg.task_adapter_name)      # 冻结其他一切
         model.set_active_adapters(cfg.task_adapter_name)
         model.active_head = cfg.head_name
@@ -131,26 +138,22 @@ def build_model(cfg):
     if cfg.mode == "madx":
         # ---- 模式 ③：MAD-X（语言层 + 任务层）----
         # 语言适配器用现成的（AdapterHub 下载），加载后自动冻结
-        model.load_adapter(cfg.language_adapter_path, load_as=LA_TARGET, set_active=False)
-        names = [LA_TARGET]
-
-        if cfg.tlr:
-            # 源语言 LA 也要挂上，才能交替
+        if not cfg.model_checkpoint:
+            model.load_adapter(cfg.language_adapter_path, load_as=LA_TARGET, set_active=False)
             model.load_adapter(cfg.source_language_adapter_path,
                                load_as=LA_SOURCE, set_active=False)
-            # 槽位顺序：源语言在前（对应论文 step % (K+1) 的 0 号槽）
-            names = [LA_SOURCE, LA_TARGET]
+        names = [LA_SOURCE, LA_TARGET]
 
         task_cfg = AdapterConfig.load("pfeiffer", reduction_factor=cfg.reduction_factor)
-        model.add_adapter(cfg.task_adapter_name, config=task_cfg)
+        if not cfg.model_checkpoint:
+            model.add_adapter(cfg.task_adapter_name, config=task_cfg)
         model.train_adapter(cfg.task_adapter_name)       # 只训任务层
         # 两层叠起来：前向时先过语言适配器，再过任务适配器
         eval_stack = Stack(LA_TARGET, cfg.task_adapter_name)
-        model.set_active_adapters(eval_stack)
+        model.set_active_adapters(eval_stack if cfg.eval_only else Stack(LA_SOURCE, cfg.task_adapter_name))
         model.active_head = cfg.head_name
 
-        note = ("MAD-X：冻结底座 + 冻结语言适配器(%s)，只训练任务适配器，两层 Stack 叠加"
-                % LA_TARGET)
+        note = "MAD-X：冻结底座及两种语言适配器，只训练任务层；不交替时英语LA训练、中文LA推理"
         plan = None
         if cfg.tlr:
             plan = TLRPlan(names, cfg.task_adapter_name)

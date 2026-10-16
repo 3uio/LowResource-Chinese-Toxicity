@@ -76,12 +76,19 @@ dist/
 
 
 # ---------- 模型权重与实验产物（体积大，用外部存储传递）----------
+# 云端上传包、下载模型和私下验收材料只保存在本地
+/云端实验/
 runs/
 checkpoints/
 *.ckpt
 *.pt
 *.pth
 *.onnx
+*.safetensors
+*.zip
+*.tar.gz
+# Internal historical review, not a public reproducibility record.
+/框架开发/修复验证记录.md
 
 
 # ---------- 临时待发送目录（含第三方数据原文，仅本地中转，用完即删）----------

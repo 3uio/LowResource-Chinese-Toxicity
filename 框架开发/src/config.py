@@ -34,7 +34,7 @@ class RunConfig:
     backbone: str = ".model_cache/xlm-roberta-base"
     # madx 模式：目标语言适配器（LA）—— 「要迁移到的那门语言」，本项目＝中文
     language_adapter: str = ".model_cache/xlm-roberta-base-zh-wiki_pfeiffer"
-    # madx + tlr 模式：源语言适配器（LA）—— 「任务数据所用的语言」，本项目＝英语
+    # madx（含不交替分支）：源语言适配器，本项目英文任务监督所用语言。
     #   （任务数据是英文 Jigsaw，所以训练时任务适配器是先在英语底座上调出来的）
     source_language_adapter: str = ".model_cache/xlm-roberta-base-en-wiki_pfeiffer"
     # TLR（Target Language-Ready adapters，目标语言就绪适配器）
@@ -64,13 +64,16 @@ class RunConfig:
     # 只推理、不训练 —— 用于 zero-shot / translate-classify 这类
     # 「拿一个现成的模型直接在数据上跑前向」的实验。开启后 train_file 可留空。
     eval_only: bool = False
+    # 完整模型目录；包含底座、分类头和全部 adapter，供独立评估/续训。
+    model_checkpoint: str = ""
+    overwrite_output: bool = False
 
     # ---------- 输出 ----------
     runs_dir: str = "runs"
 
     # ------------------------------------------------------------------
     @staticmethod
-    def load(path):
+    def load(path, validate=True):
         with open(path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
 
@@ -80,10 +83,23 @@ class RunConfig:
             raise ValueError("配置文件里有未知字段：%s\n可用字段：%s"
                              % (sorted(unknown), sorted(known)))
         cfg = RunConfig(**raw)
-        cfg.validate()
+        if validate:
+            cfg.validate()
         return cfg
 
     def validate(self):
+        if self.num_labels != 2:
+            raise ValueError("当前毒性指标仅支持 num_labels=2")
+        if self.batch_size < 1 or self.max_length < 2 or self.epochs <= 0:
+            raise ValueError("batch_size/max_length/epochs 必须为有效正数")
+        if self.model_checkpoint:
+            import json
+            manifest = os.path.join(abspath(self.model_checkpoint), "checkpoint_manifest.json")
+            with open(manifest, encoding="utf-8") as f:
+                saved = json.load(f)
+            for key in ("mode", "head_name", "num_labels", "task_adapter_name", "tlr"):
+                if saved[key] != getattr(self, key):
+                    raise ValueError("checkpoint 配置不一致：%s" % key)
         if self.mode not in ("full_ft", "adapter", "madx"):
             raise ValueError("mode 只能是 full_ft / adapter / madx，当前为 %r" % self.mode)
         if not self.train_file and not self.eval_only:
@@ -94,17 +110,16 @@ class RunConfig:
             p = abspath(getattr(self, name))
             if p and not os.path.exists(p):
                 raise FileNotFoundError("找不到数据文件 %s = %s" % (name, p))
-        if self.mode == "madx" and not os.path.exists(abspath(self.language_adapter)):
+        if self.mode == "madx" and not self.model_checkpoint and not os.path.exists(abspath(self.language_adapter)):
             raise FileNotFoundError("madx 模式需要语言适配器，找不到：%s"
                                     % abspath(self.language_adapter))
-        if self.tlr:
-            if self.mode != "madx":
-                raise ValueError("tlr 只在 madx 模式下有意义（其他模式没有语言层可交替），"
-                                 "当前 mode=%r" % self.mode)
+        if self.tlr and self.mode != "madx":
+            raise ValueError("tlr 只在 madx 模式下有意义")
+        if self.mode == "madx" and not self.model_checkpoint:
             if not self.source_language_adapter:
-                raise ValueError("tlr=true 必须提供 source_language_adapter（源语言 LA）")
+                raise ValueError("madx 必须提供 source_language_adapter（源语言 LA）")
             if not os.path.exists(abspath(self.source_language_adapter)):
-                raise FileNotFoundError("tlr=true 找不到源语言 LA：%s"
+                raise FileNotFoundError("madx 找不到源语言 LA：%s"
                                         % abspath(self.source_language_adapter))
         return self
 

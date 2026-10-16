@@ -24,17 +24,26 @@ from src.runner import run                  # noqa: E402
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description="可配置训练框架（全参数微调 / Adapter / MAD-X）")
     ap.add_argument("--config", required=True, help="yaml 配置文件路径")
     ap.add_argument("--exp-name", default=None, help="覆盖配置里的实验名")
     ap.add_argument("--seed", type=int, default=None, help="覆盖配置里的随机种子")
+    ap.add_argument("--checkpoint", help="加载已训练完整模型目录")
+    ap.add_argument("--eval-only", action="store_true", help="只评估")
     args = ap.parse_args()
 
-    cfg = RunConfig.load(abspath(args.config))
+    cfg = RunConfig.load(abspath(args.config), validate=False)
     if args.exp_name:
         cfg.exp_name = args.exp_name
     if args.seed is not None:
         cfg.seed = args.seed
+    if args.checkpoint:
+        cfg.model_checkpoint = args.checkpoint
+    if args.eval_only:
+        cfg.eval_only = True
+    cfg.validate()
 
     summary = run(cfg)
 

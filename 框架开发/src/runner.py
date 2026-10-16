@@ -37,11 +37,13 @@ def compute_metrics(eval_pred):
     from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
 
     logits, labels = eval_pred
+    if isinstance(logits, (tuple, list)):
+        logits = logits[0]
     preds = np.argmax(logits, axis=-1)
     cm = confusion_matrix(labels, preds, labels=[0, 1])
     tn, fp, fn, tp = cm.ravel()
     return {
-        "macro_f1": float(f1_score(labels, preds, average="macro", zero_division=0)),
+        "macro_f1": float(f1_score(labels, preds, labels=[0, 1], average="macro", zero_division=0)),
         "accuracy": float(accuracy_score(labels, preds)),
         "toxic_recall": float(tp / (tp + fn)) if (tp + fn) else 0.0,
         "fpr": float(fp / (fp + tn)) if (fp + tn) else 0.0,
@@ -58,13 +60,13 @@ def evaluate_split(trainer, dataset, split_name, run_dir, log,
 
     返回该数据集上的指标 dict。
     """
-    out = trainer.evaluate(dataset, metric_key_prefix=prefix)
+    pred_out = trainer.predict(dataset, metric_key_prefix=prefix)
+    out = pred_out.metrics
     metrics = {k[len(prefix) + 1:]: v for k, v in out.items()
                if k.startswith(prefix + "_") and isinstance(v, (int, float))}
     # 去掉计时类字段，只留真正的指标
     # （model_preparation_time 只在没训练过的 model 上出现，train 之后不会）
-    for drop in ("runtime", "samples_per_second", "steps_per_second",
-                 "jit_compile_sec", "model_preparation_time"):
+    for drop in ("steps_per_second", "jit_compile_sec", "model_preparation_time"):
         metrics.pop(drop, None)
 
     log("      [%s] %d 条" % (split_name, len(dataset)))
@@ -73,7 +75,6 @@ def evaluate_split(trainer, dataset, split_name, run_dir, log,
             log("        %-14s %.4f" % (k, metrics[k]))
 
     # 逐条预测
-    pred_out = trainer.predict(dataset, metric_key_prefix=prefix)
     raw = pred_out.predictions
     # ⚠️ adapters 系的模型有时会把多个输出打包返回，predictions 不一定是纯 logits 数组，
     #    直接 np.argmax 会报 "inhomogeneous shape"。这里取第一个元素再转 ndarray。
@@ -89,14 +90,24 @@ def evaluate_split(trainer, dataset, split_name, run_dir, log,
     else:
         labels = [int(x) for x in np.asarray(labels).reshape(-1)]
     preds = [int(x) for x in np.asarray(preds).reshape(-1)]
-    n = min(len(rows), len(labels), len(preds))
+    n = len(rows)
+    if len(labels) != n or len(preds) != n:
+        raise ValueError("预测条数不一致：rows=%d labels=%d preds=%d" % (n, len(labels), len(preds)))
+    fields = ["index", "text", "label", "pred", "correct"]
+    for r in rows:
+        for key in r:
+            if key not in fields:
+                fields.append(key)
     with open(os.path.join(run_dir, pred_name), "w",
               encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["index", "text", "label", "pred", "correct"])
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
         for i in range(n):
             r, y, yhat = rows[i], labels[i], preds[i]
-            w.writerow([i, r.get("text", ""), y, yhat, int(y == yhat)])
+            record = {k: json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else v
+                      for k, v in r.items()}
+            record.update(index=i, label=y, pred=yhat, correct=int(y == yhat))
+            w.writerow(record)
     log("        逐条预测已写入 %s（%d 条）" % (pred_name, n))
     return metrics
 
@@ -109,7 +120,14 @@ def run(cfg, logger=print):
     from .data import load_datasets
 
     t_start = time.time()
+    cfg.validate()
+    if not cfg.cpu and not torch.cuda.is_available():
+        raise RuntimeError("配置请求 GPU，但 CUDA 不可用；请先核验服务器环境")
+    if not cfg.cpu:
+        torch.cuda.reset_peak_memory_stats()
     run_dir = cfg.run_dir()
+    if os.path.isdir(run_dir) and os.listdir(run_dir) and not cfg.overwrite_output:
+        raise FileExistsError("结果目录非空，请更换 exp_name；显式 overwrite_output 才允许覆盖：" + run_dir)
     os.makedirs(run_dir, exist_ok=True)
 
     log_lines = []
@@ -131,7 +149,10 @@ def run(cfg, logger=print):
     # ---- 1) 分词器与数据 ----
     log("")
     log("[1/5] 加载分词器与数据")
-    tokenizer = AutoTokenizer.from_pretrained(cfg.backbone_path)
+    from .config import abspath
+    tokenizer = AutoTokenizer.from_pretrained(abspath(cfg.model_checkpoint) if cfg.model_checkpoint else cfg.backbone_path)
+    if cfg.eval_only and not cfg.model_checkpoint:
+        log("      注意：未指定已训练 checkpoint；新分类头仅用于流程自检，不代表 zero-shot 效果")
     ds = load_datasets(cfg, tokenizer)
     for split, d in ds.items():
         log("      %-5s : %s" % (split, "%d 条" % len(d) if d is not None else "（未提供）"))
@@ -244,6 +265,16 @@ def run(cfg, logger=print):
     # ---- 5) 落盘 ----
     log("")
     log("[5/5] 落盘")
+    model_dir = os.path.join(run_dir, "model")
+    if not cfg.eval_only:
+        model.save_pretrained(model_dir, safe_serialization=True)
+        tokenizer.save_pretrained(model_dir)
+        manifest = {k: getattr(cfg, k) for k in
+                    ("mode", "head_name", "num_labels", "task_adapter_name", "tlr")}
+        manifest.update(schema_version=1, backbone=cfg.backbone_path)
+        with open(os.path.join(model_dir, "checkpoint_manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        log("      model/（完整可重载模型与分词器）")
     with open(os.path.join(run_dir, "config.json"), "w", encoding="utf-8") as f:
         json.dump(cfg.to_dict(), f, ensure_ascii=False, indent=2)
 
@@ -254,7 +285,10 @@ def run(cfg, logger=print):
         "eval_only": cfg.eval_only,
         "tlr": tlr_info,
         "params": ps,
-        "active": asum,
+        "active": active_summary(model),
+        "model_checkpoint": model_dir if not cfg.eval_only else cfg.model_checkpoint,
+        "device": "cpu" if cfg.cpu else torch.cuda.get_device_name(),
+        "peak_cuda_gib": None if cfg.cpu else torch.cuda.max_memory_allocated() / 1024**3,
         "train_seconds": round(train_seconds, 2),
         "train_loss": train_loss,          # eval_only=true 时为 null
         "metrics": metrics,                # 主评估集（有 dev 用 dev，否则用 test）

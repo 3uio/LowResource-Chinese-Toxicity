@@ -1,5 +1,13 @@
 # A-5 训练框架（Track A 交付物）
 
+> **2026-10-16 当前版本**：训练现在保存完整 `model/`（底座、分类头、adapter、分词器）。
+> 重载用 `--checkpoint <模型目录> --eval-only --exp-name <新名字>`，模式和头配置须一致。
+> MAD-X 不交替分支为英语 LA 训练、中文 LA 推理；随机头只用于流程测速，不是有效 zero-shot 基线。
+> DAPT 另用 `dapt.py`，见 `DAPT运行说明.md`；DAPT 产物填 `backbone`，分类权重填 `model_checkpoint`。
+> 预测 CSV 保留全部 metadata；条数不一致报错，同文/已有家族键跨 split 拒绝训练。
+> 非空结果目录默认不覆盖。12 项小模型 CPU 回归通过；真实数据 GPU 分类实验尚未完成。
+> 单卡 BF16 全量单轮 DAPT 已完成，见[实测记录](实验记录/DAPT_seed42_20261015.md)。这不等于下游分类有效性已证实。
+
 **一句话**：改一行配置，就能在「全参数微调 / Adapter / MAD-X / MAD-X+TLR」几种训练方式之间切换，
 结果自动落到统一目录。**用的人不需要改代码。**
 
@@ -13,17 +21,17 @@
 **第 0 步 · 先把环境装好** → 见 [`环境搭建说明.md`](环境搭建说明.md)（含依赖清单说明与 7 个已知的坑）。
 
 ```powershell
-cd "E:\信息安全yhy\LLM去毒化"
+# 在仓库根目录运行，先激活按环境说明建立的虚拟环境。
 
 # ① 选一个配置文件（决定用哪种训练方式）
 #    框架开发\configs\full_ft.yaml    全参数微调
 #    框架开发\configs\adapter.yaml    Adapter
-#    框架开发\configs\madx.yaml       MAD-X（不交替，全程目标语言 LA）
+#    框架开发\configs\madx.yaml       MAD-X（英语 LA 训练、中文 LA 推理）
 #    框架开发\configs\madx_tlr.yaml   MAD-X + TLR（训练时英/中语言适配器交替）
-#    框架开发\configs\eval_only.yaml  只推理不训练（zero-shot 等）
+#    框架开发\configs\eval_only.yaml  随机头流程测速（不代表 zero-shot 效果）
 
 # ② 跑
-.venv\Scripts\python.exe 框架开发\train.py --config 框架开发\configs\adapter.yaml
+python 框架开发/train.py --config 框架开发/configs/adapter.yaml
 
 # ③ 去 runs\adapter\adapter\seed42\ 看结果
 ```
@@ -32,7 +40,7 @@ cd "E:\信息安全yhy\LLM去毒化"
 
 ```powershell
 # 依次跑 seed 1/2/3，最后自动汇总成 batch_summary.csv（含均值行）
-.venv\Scripts\python.exe 框架开发\run_batch.py --config 框架开发\configs\adapter.yaml --seeds 1 2 3 --exp-name adapter_3seed
+python 框架开发/run_batch.py --config 框架开发/configs/adapter.yaml --seeds 1 2 3 --exp-name adapter_3seed
 ```
 
 `train.py` 的可选参数：
@@ -56,7 +64,13 @@ cd "E:\信息安全yhy\LLM去毒化"
 ├── train.py                  ★ 入口脚本。读配置 → 跑一遍 → 打印结果路径
 ├── run_batch.py              ★ 批量跑多个随机种子，并汇总成 batch_summary.csv
 │
-├── src\                      ★ 框架核心（4 个模块，职责单一）
+├── dapt.py                   ★ 独立的 MLM 继续预训练入口，不替代分类框架
+├── DAPT运行说明.md           ★ BF16 试跑、全量训练与交付方法
+├── requirements-dapt.txt     ★ 仅 DAPT 的云端实测依赖，不含 torch
+├── tests/test_regressions.py   离线小模型回归测试
+├── 实验记录/                  可公开的配置、指标与验收边界
+│
+├── src\                      ★ 框架核心
 │   ├── __init__.py               模块说明（空壳，只为让 Python 认出这是个包）
 │   ├── config.py                 配置的定义、加载、校验
 │   │                             （定义 RunConfig 类；所有相对路径按项目根目录解析）
@@ -65,6 +79,7 @@ cd "E:\信息安全yhy\LLM去毒化"
 │   ├── builder.py                ★ 模型组装 —— 各模式的差异全在这里
 │   │                             （full_ft / adapter / madx 各自的冻结与叠加方式
 │   │                               + TLR 交替计划与切换回调）
+│   ├── isolation.py              归一化哈希与冻结语料审计校验
 │   └── runner.py                 训练 + 评估 + 落盘
 │                                 （各模式共用同一条训练路径；dev / test 分两段评估）
 │
@@ -92,7 +107,7 @@ cd "E:\信息安全yhy\LLM去毒化"
 > ℹ️ 上面 4 个验证 / 下载脚本运行后会在同目录生成 `_01_检查结果.txt` ~ `_04_下载结果.txt`。
 > 这些是**脚本输出，不入仓库**（已在 `.gitignore` 里按 `框架开发/_*.txt` 排除），需要时重跑脚本即可。
 
-**框架本体只有 7 个文件**：`train.py` + `run_batch.py` + `src/` 下的 4 个模块（+ `configs/` 里的配置）。其余都是验证脚本和记录。
+分类主线是 `train.py` / `run_batch.py` 与 `src/`；DAPT 使用独立入口 `dapt.py`，只共享路径和隔离校验工具。
 
 ---
 
@@ -101,12 +116,11 @@ cd "E:\信息安全yhy\LLM去毒化"
 | 模式 | 底座 | 语言适配器 | 任务适配器 | 可训练参数占比 |
 |---|---|---|---|---|
 | `full_ft` | 训练 | — | — | **100%** |
-| `adapter` | 冻结 | — | 训练 | **约 0.83%** |
-| `madx`（tlr: false） | 冻结 | 冻结（现成的，1 个） | 训练 | **约 0.81%** |
-| `madx_tlr`（tlr: true） | 冻结 | 冻结（现成的，2 个，交替使用） | 训练 | **约 0.79%** |
+| `adapter` | 冻结 | — | 训练 | 以 `metrics.params` 实测为准 |
+| `madx`（tlr: false） | 冻结 | 冻结（2 个，英语训练、中文推理） | 训练 | 以 `metrics.params` 实测为准 |
+| `madx_tlr`（tlr: true） | 冻结 | 冻结（2 个，训练时交替） | 训练 | 以 `metrics.params` 实测为准 |
 
-> 占比略降是因为挂了两个语言适配器，分母（总参数）变大了；**可训练参数个数完全一样**
-> （都是 2,328,788），说明语言适配器全程冻结、只训任务适配器。
+> Adapter 分支还训练分类头。占比依底座与 adapter 配置变化，不复用旧配置的百分比作为正式实验结果。
 
 实现全在 `src/builder.py` 的 `build_model()` 里，几套组装配方：
 
@@ -119,14 +133,15 @@ model.add_adapter("task", config=AdapterConfig.load("pfeiffer", reduction_factor
 model.train_adapter("task")
 model.set_active_adapters("task")
 
-# madx：再叠一层语言适配器（现成的，自动冻结）
+# madx：加载两种语言适配器；训练使用源语言，评估使用目标语言
+model.load_adapter("<源语言 LA 路径>", load_as="lang_source", set_active=False)
 model.load_adapter("<目标语言 LA 路径>", load_as="lang_target", set_active=False)
 model.add_adapter("task", ...)
 model.train_adapter("task")
-model.set_active_adapters(Stack("lang_target", "task"))    # 语言层 + 任务层
+model.set_active_adapters(Stack("lang_source", "task"))    # 训练
+# 评估前：model.set_active_adapters(Stack("lang_target", "task"))
 
-# madx + tlr：再挂一个源语言 LA，训练时两者交替
-model.load_adapter("<源语言 LA 路径>", load_as="lang_source", set_active=False)
+# madx + tlr：同样加载两种 LA，训练时两者交替
 # → 每个训练步切换：Stack(lang_source, task) / Stack(lang_target, task)
 ```
 
@@ -140,7 +155,7 @@ model.load_adapter("<源语言 LA 路径>", load_as="lang_source", set_active=Fa
 | 推理时用的语言层 | 目标语言 | 目标语言 |
 
 原版的毛病：如果训练时垫的是源语言 LA、推理时突然换成目标语言 LA，**两者从没配合过**，
-效果会掉，而且**只在推理时暴露**（训练 loss 一切正常）。TLR 让它们在训练阶段就磨合过。
+可能影响迁移效果，训练 loss 本身不能证明不存在该问题。TLR 让两种语言层都参与训练期前向，实际效果仍需对照实验验证。
 
 实现规则（论文原文 `step % (K+1)`）：**第 n 个训练步只激活第 `n % 层数` 层语言适配器**。
 本项目只有中文一个目标语言（K=1）→ 槽位 = `[lang_source(英), lang_target(中)]`，即逐步交替。
@@ -166,7 +181,7 @@ TLR 交替统计：总步数 8
 
 配置里加一行 `eval_only: true`，就跳过训练、直接进评估。用途：
 
-- **zero-shot 测速**（随机分类头 + 只读测试集，纯看吞吐）
+- **随机头流程测速**（不代表 zero-shot 毒性基线效果）
 - 加载别人训好的 checkpoint，直接在中文数据上评
 - 任何"只想拿模型跑一遍前向"的场景
 
@@ -176,6 +191,14 @@ TLR 交替统计：总步数 8
 3. `metrics.json` 里 `train_seconds = 0`、`train_loss = null`、`eval_only = true`
 
 `configs/eval_only.yaml` 是一份可直接用的样例。
+
+重载已训练分类器时，使用与训练一致的模式、头名和 TLR 配置，另取新实验名：
+
+```bash
+python 框架开发/train.py --config 框架开发/configs/adapter.yaml --checkpoint runs/adapter/adapter/seed42/model --eval-only --exp-name adapter_replay
+```
+
+`backbone` 是新分类训练的初始底座，包括私下交付的 DAPT 模型；`model_checkpoint` / `--checkpoint` 是本框架已经保存的完整分类器，二者不能混用。
 
 ---
 
@@ -213,6 +236,7 @@ runs\<模式>\<实验名>\seed<种子>\
 ├── metrics.json           参数统计 + 指标 + 耗时
 ├── predictions.csv        逐条预测（主评估集：有 dev 用 dev，否则用 test）
 ├── predictions_test.csv   逐条预测（test 段；只有提供 test_file 时才有）
+├── model/                 训练完成时保存的完整模型、分词器和 checkpoint_manifest.json
 └── train.log              运行日志
 
 runs\<模式>\<实验名>\batch_summary.csv    ← 用 run_batch.py 跑多 seed 时才有
@@ -291,14 +315,13 @@ runs\<模式>\<实验名>\batch_summary.csv    ← 用 run_batch.py 跑多 seed 
 | — | dev + test 两段评测 | ✅ |
 | — | `eval_only` 只推理模式 | ✅ |
 | — | 多 seed 批量脚本 `run_batch.py` | ✅ |
-| 5 | 接口说明文档 + 交付 Track B | ⬜ |
+| 5 | 接口说明与 B 交接材料 | 已准备；实际发送与签收需另确认 |
 
 **还没做 / 边界**
 
 - **数据**：`data/` 下三份都是示意数据，等 Track C 的表2 到位后替换
-- **环境**：当前是 CPU 版 torch（本地验证用）；上云服务器后要按那边的 CUDA 重装并锁定版本
-  → 步骤见 [`环境搭建说明.md`](环境搭建说明.md) §3 与 §10
-- **任务形式**：框架只做「文本分类」这一种形式（毒性检测）—— 二分类，`num_labels` 可配
+- **环境**：本地 CPU 小模型回归与 AutoDL BF16 DAPT 分开验证；云端分类全依赖和真实实验尚待 B 验证。优先保留平台已验证的 CUDA torch，见[环境说明](环境搭建说明.md)。
+- **任务形式**：分类入口目前只支持毒性二分类，`num_labels` 必须为 2；DAPT 入口另做 MLM。
 - **检索增强（Retrieval-Augmented）**：检索组件**不在框架内**。框架负责"拿到文本 → 跑前向 → 落盘"，
   检索与拼接是使用者自己的环节
 - **多语言 LA 与 backbone 绑定**：现有语言适配器都是 xlm-roberta-base 的，所以 `madx` 模式只能用

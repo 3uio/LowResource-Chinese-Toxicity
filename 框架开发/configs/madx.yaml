@@ -4,7 +4,7 @@
 # 语言适配器用现成的（AdapterHub 下载的中文 LA），不用自己训
 #
 # 本文件 = 「不交替」的原版形式（tlr: false）：
-#   训练与推理全程都用目标语言 LA（中文）。
+#   英文任务训练使用源语言 LA（英语），中文推理使用目标语言 LA。
 # 若要做 TLR（训练时在英语/中文语言适配器之间轮换），改用 madx_tlr.yaml。
 # ============================================================
 
@@ -14,6 +14,7 @@ mode: madx                    # ← 切换模式就改这一行
 # ---- 模型 ----
 backbone: .model_cache/xlm-roberta-base
 language_adapter: .model_cache/xlm-roberta-base-zh-wiki_pfeiffer   # 目标语言层（中文）
+source_language_adapter: .model_cache/xlm-roberta-base-en-wiki_pfeiffer
 tlr: false                    # 不交替（原版形式）
 task_adapter_name: task
 reduction_factor: 16

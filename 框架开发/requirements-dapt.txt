@@ -1,0 +1,12 @@
+# AutoDL DAPT environment validated on Python 3.12.3, torch 2.8.0+cu128.
+# Keep the platform's validated CUDA torch; this file intentionally excludes torch.
+# Classification/Adapter experiments use requirements.txt instead.
+transformers==4.57.6
+accelerate==1.15.0
+huggingface_hub==0.36.2
+tokenizers==0.22.2
+safetensors==0.8.0
+numpy==2.5.3
+PyYAML==6.0.3
+zhconv==1.4.3
+setuptools==81.0.0
