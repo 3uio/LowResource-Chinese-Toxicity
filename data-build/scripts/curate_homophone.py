@@ -27,6 +27,14 @@ import csv
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# 控制台兜底（本脚本未 import sys，用局部导入）：Windows GBK 控制台遇到 emoji 会崩，
+# 统一降级为"打不出的字符显示成 ?"。
+try:                                                     # pragma: no cover
+    import sys as _sys
+    _sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 T = Path(__file__).resolve().parent.parent
 CAND = T / "data" / "rules" / "_candidates" / "homophone_word_candidates.csv"
 OUT_OK = T / "data" / "rules" / "homophone_word.csv"
@@ -72,12 +80,12 @@ def main(argv=None) -> int:
     final.sort(key=lambda r: (-int(r["attested_in_corpus"]), r["target_word"]))
 
     print(f"\n[结果]")
-    print(f"  ✅ 可直接用（A/C 级 + 无生僻字 + 每词≤{args.max_per_word}）: {len(final)} 条，"
+    print(f"  [OK] 可直接用（A/C 级 + 无生僻字 + 每词≤{args.max_per_word}）: {len(final)} 条，"
           f"覆盖 {len({r['target_word'] for r in final})} 个目标词")
-    print(f"  ⚠️ 需人工确认（B 级，音对但不知是否成词）      : {len(review)} 条，"
+    print(f"  [WARN] 需人工确认（B 级，音对但不知是否成词）      : {len(review)} 条，"
           f"覆盖 {len({r['target_word'] for r in review})} 个目标词")
     for k, v in rejected.items():
-        print(f"  ❌ 丢弃 {k:<22}: {v} 条")
+        print(f"  [FAIL] 丢弃 {k:<22}: {v} 条")
 
     # ---- 成品表：生成器读取格式 char,replacements
     OUT_OK.parent.mkdir(parents=True, exist_ok=True)

@@ -33,6 +33,13 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Windows 控制台默认 GBK，遇到 emoji / 生僻符号会 UnicodeEncodeError。
+# 统一降级为"打不出的字符显示成 ?"，避免因为**数据里**的字符把脚本崩掉。
+try:                                                     # pragma: no cover
+    sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 # ---------------------------------------------------------------- attack_type 可行性
 
 ALL_TYPES = ["PY_Full", "PY_Abbr", "Homo", "Graph_Similar",

@@ -35,6 +35,14 @@ from pathlib import Path
 
 import zhconv
 
+# 控制台兜底（本脚本未 import sys，用局部导入）：Windows GBK 控制台遇到 emoji 会崩，
+# 统一降级为"打不出的字符显示成 ?"。
+try:                                                     # pragma: no cover
+    import sys as _sys
+    _sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 T = Path(__file__).resolve().parent.parent
 RULES = T / "data" / "rules"
 SEEDS = T / "out" / "seed_candidates.csv"

@@ -50,6 +50,13 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Windows 控制台默认 GBK，遇到 emoji / 生僻符号会 UnicodeEncodeError。
+# 统一降级为"打不出的字符显示成 ?"，避免因为**数据里**的字符把脚本崩掉。
+try:                                                     # pragma: no cover
+    sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 T = Path(__file__).resolve().parent.parent          # TrackC/
 POOL = T / "data" / "raw" / "seeds" / "A交付_2026-02-05" / "表2种子预留清单.csv"
 SEEDS = T / "out" / "seed_candidates.csv"
@@ -211,7 +218,7 @@ def main() -> int:
         print(f"  {r['target_word']:<8} → {r['candidate']:<8} "
               f"[{r['pinyin']}]  语料 {r['attested_in_corpus']:>3} 次")
 
-    print("\n⚠️ 候选表，不是成品表（全部 need_review=YES）。")
+    print("\n[WARN] 候选表，不是成品表（全部 need_review=YES）。")
     print("   筛选标准待写在 data/rules/README.md")
     return 0
 

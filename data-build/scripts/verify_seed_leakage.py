@@ -34,6 +34,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from validate_schema import HAS_ZHCONV, norm, sha  # noqa: E402
 
+# Windows 控制台默认 GBK，遇到 emoji / 生僻符号会 UnicodeEncodeError。
+# 统一降级为"打不出的字符显示成 ?"，避免因为**数据里**的字符把脚本崩掉。
+try:                                                     # pragma: no cover
+    sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 
 def read_csv(p: Path):
     with p.open(encoding="utf-8-sig", newline="") as fh:
@@ -73,10 +80,10 @@ def main(argv=None) -> int:
         for r in hit[:10]:
             print(f"    ✗ {r['source_id']}  {r['text'][:40]}")
         if hit:
-            print("    ❌ 命中的种子已被 DAPT 读过，必须剔除或与 A 核对")
+            print("    [FAIL] 命中的种子已被 DAPT 读过，必须剔除或与 A 核对")
             problems += len(hit)
         else:
-            print("    ✅ 零命中 —— 无种子落入表1")
+            print("    [OK] 零命中 —— 无种子落入表1")
     else:
         print("\n[skip] 未提供表1 哈希清单，跳过交叉核对")
 
@@ -102,7 +109,7 @@ def main(argv=None) -> int:
             if hit:
                 problems += len(hit)
             else:
-                print("    ✅ 零命中")
+                print("    [OK] 零命中")
     else:
         print("\n[skip] 未提供表5 排除清单")
 
@@ -129,9 +136,9 @@ def main(argv=None) -> int:
 
     print("\n" + "=" * 50)
     if problems == 0:
-        print("结论：✅ 全部通过，种子集可用于生成表2 变体。")
+        print("结论：[OK] 全部通过，种子集可用于生成表2 变体。")
         return 0
-    print(f"结论：❌ 共 {problems} 处问题，需修正后再交付。")
+    print(f"结论：[FAIL] 共 {problems} 处问题，需修正后再交付。")
     return 1
 
 

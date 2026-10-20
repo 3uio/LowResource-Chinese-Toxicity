@@ -4,10 +4,18 @@
 输出可直接贴给 B/D 作为验证记录。
 """
 import csv
+import os
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Windows 控制台默认 GBK，遇到 emoji / 生僻符号会 UnicodeEncodeError。
+# 统一降级为"打不出的字符显示成 ?"，避免因为**数据里**的字符把脚本崩掉。
+try:                                                     # pragma: no cover
+    sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
 
 # 本脚本在 scripts/ 下；命令行里的相对路径是相对**仓库根**（gen_variants_rule.py 等
 # 都按仓库根解析），所以这里显式取上一级。
@@ -16,9 +24,16 @@ LOG = []
 
 
 def run(cmd, note=""):
+    """跑子进程并抓输出。
+
+    必须显式把子进程的 stdout 编码定成 UTF-8：Windows 上子进程写管道时
+    默认用本地代码页（GBK），父进程按 UTF-8 解码 → 中文全变成 `?`，
+    于是所有"输出里是否包含某句话"的判据都会**假失败**。
+    """
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run([sys.executable, *cmd], cwd=str(T),
                        capture_output=True, text=True,
-                       encoding="utf-8", errors="replace")
+                       encoding="utf-8", errors="replace", env=env)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -70,27 +85,50 @@ item("未开 --require-exclusion 时仅 warn（本地联调）", rc == 0,
 
 # ---------------------------------------------------------------- 3
 sec("3. 生成器：内置占位映射隔离（B 第 4 条）")
+
+# 判据说明（2026-10-11 修正）：
+#   原先这里的判据写成"默认产出 0 条"，**这个是错的**。实测：
+#   `PY_Full`/`PY_Abbr` 走 pypinyin、`Sym_Separator` 不需要词表，
+#   这三类在没有映射表时**照常产出**；被跳过的是**依赖映射表**的
+#   Homo / Graph_Similar / Graph_Split / Sym_Leet / Emoji_Sub。
+#   所以真正要验的不变量是：**默认不加载占位表 → 依赖映射的类必须为 0，
+#   且必须打印「占位表默认不启用」**；加了 --allow-placeholder 才允许它们有产出。
+
+MAPPING_TYPES = {"Homo", "Graph_Similar", "Graph_Split", "Sym_Leet", "Emoji_Sub"}
+
+
+def count_types(path):
+    p = T / path
+    if not p.exists():
+        return {}, 0
+    rows = list(csv.DictReader(open(p, encoding="utf-8-sig")))
+    by = {}
+    for r in rows:
+        by[r.get("attack_type", "")] = by.get(r.get("attack_type", ""), 0) + 1
+    return by, len(rows)
+
+
 rc, out = run(["scripts/gen_variants_rule.py",
                "--seeds", "examples/demo_seeds.csv",
-               "--out", "out/_vl_a.csv", "--stats-out", "out/_vl_as.csv",
-               "--rules-dir", "data/rules"])
-n_off = 0
-p = T / "out/_vl_a.csv"
-if p.exists():
-    n_off = sum(1 for _ in open(p, encoding="utf-8-sig")) - 1
-item("默认不加载占位表（有警告）", "占位表默认不启用" in out,
-     f"产出 {n_off} 条")
+               "--out", "out/_vl_a.csv", "--stats-out", "out/_vl_as.csv"])
+by_off, n_off = count_types("out/_vl_a.csv")
+n_map_off = sum(by_off.get(t, 0) for t in MAPPING_TYPES)
+item("默认不加载占位表：依赖映射的类产出为 0", n_map_off == 0,
+     f"总产出 {n_off} 条；依赖映射类 {n_map_off} 条；"
+     f"各类：{ {k: v for k, v in sorted(by_off.items())} }")
+item("默认运行会明确报告「占位表默认不启用」", "占位表默认不启用" in out,
+     [l for l in out.splitlines() if "warn" in l.lower()][:1])
 
 rc, out = run(["scripts/gen_variants_rule.py",
                "--seeds", "examples/demo_seeds.csv",
                "--out", "out/_vl_b.csv", "--stats-out", "out/_vl_bs.csv",
                "--allow-placeholder"])
-n_on = 0
-p = T / "out/_vl_b.csv"
-if p.exists():
-    n_on = sum(1 for _ in open(p, encoding="utf-8-sig")) - 1
+by_on, n_on = count_types("out/_vl_b.csv")
+n_map_on = sum(by_on.get(t, 0) for t in MAPPING_TYPES)
 item("显式 --allow-placeholder 才启用（有 WARN）", "不得用于正式交付" in out,
-     f"产出 {n_on} 条（占位表使产出增加，说明确实被隔离了）")
+     [l for l in out.splitlines() if "WARN" in l][:1])
+item("启用占位表后，依赖映射的类确实有产出（反证上面那条不是假通过）",
+     n_map_on > 0, f"依赖映射类 {n_map_on} 条（关闭时 {n_map_off} 条）")
 
 # ---------------------------------------------------------------- 4
 sec("4. 新字段：semantic_score_01 / semantic_score_restored / homophone_type")

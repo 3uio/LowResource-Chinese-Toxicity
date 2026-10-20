@@ -62,6 +62,13 @@ from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
+# Windows 控制台默认 GBK，遇到 emoji / 生僻符号会 UnicodeEncodeError。
+# 统一降级为"打不出的字符显示成 ?"，避免因为**数据里**的字符把脚本崩掉。
+try:                                                     # pragma: no cover
+    sys.stdout.reconfigure(errors="replace")
+except Exception:                                        # pragma: no cover
+    pass
+
 # 与 docs/01_attack_type定义_v0.1.md §1 保持一致的 8 小类
 FAMILY_OF = {
     "PY_Full": "phonetic", "PY_Abbr": "phonetic", "Homo": "phonetic",
@@ -212,7 +219,7 @@ def cmd_add(args) -> int:
         print("[警告] 没有给 --seed：这条记录无法与种子关联，只能算工时")
 
     if errors:
-        print("❌ 校验失败，本条**未写入**：")
+        print("[FAIL] 校验失败，本条**未写入**：")
         for e in errors:
             print(f"   - {e}")
         return 1
@@ -278,11 +285,11 @@ def cmd_add(args) -> int:
     write_csv(args.variants, VARIANT_COLS, vrows)
 
     total = len(rows)
-    print(f"✅ 已记录第 {total} 条：{args.seed or '(无种子)'} / {args.attack_type} "
+    print(f"[OK] 已记录第 {total} 条：{args.seed or '(无种子)'} / {args.attack_type} "
           f"/ {_fmt_minutes(args.minutes)} 分钟 / 难度 {args.difficulty}")
     print(f"   variant_id = {variant_id}")
     if args.blocker:
-        print(f"   ⚠️ 卡点已标记：{args.blocker}")
+        print(f"   [WARN] 卡点已标记：{args.blocker}")
     if total < 20:
         print(f"   进度：{total}/20（最低目标）　剩余 {20 - total} 条")
     elif total < 50:
@@ -366,15 +373,15 @@ def cmd_stats(args) -> int:
     print()
 
     if m["missing_types"]:
-        print(f"⚠️ 还没覆盖的小类（{len(m['missing_types'])}/8）："
+        print(f"[WARN] 还没覆盖的小类（{len(m['missing_types'])}/8）："
               f"{' / '.join(m['missing_types'])}")
         print("   8 小类都要至少手写 2–3 条，否则测不出类间工时差异，")
         print("   也验证不了定义在每类上是否够用。")
     else:
-        print("✅ 8 小类已全覆盖")
+        print("[OK] 8 小类已全覆盖")
 
     if m["blocker_count"]:
-        print(f"\n⚠️ 有 {m['blocker_count']} 条标了卡点 → 出报告时会被单列，"
+        print(f"\n[WARN] 有 {m['blocker_count']} 条标了卡点 → 出报告时会被单列，"
               "直接作为 docs/01 评审会的输入。")
     return 0
 
@@ -505,14 +512,14 @@ def cmd_report(args) -> int:
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text, encoding="utf-8")
-        print(f"✅ 报告已写入：{args.out}")
+        print(f"[OK] 报告已写入：{args.out}")
     else:
         print(text)
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(m, ensure_ascii=False, indent=2),
                              encoding="utf-8")
-        print(f"✅ 指标 JSON 已写入：{args.json}")
+        print(f"[OK] 指标 JSON 已写入：{args.json}")
     return 0
 
 
