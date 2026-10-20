@@ -140,6 +140,7 @@ def generate(rows: list[dict], modes: list[str], family: str,
             continue
 
         seq = 0
+        produced: set[str] = set()
         for mode in modes:
             p = plan_text(text, s, e, mode)
             if p is None:
@@ -147,6 +148,13 @@ def generate(rows: list[dict], modes: list[str], family: str,
             if "error" in p:
                 fails.append(f"{sid}: {p['error']}")
                 continue
+            # 2 字词时 adjacent 与 reverse 的结果**完全相同**（女权→权女），
+            # 不去重就会产出两条文本一样、只有 variant_id 不同的变体。
+            if p["new_text"] in produced:
+                fails.append(f"{sid}: {mode} 与已有变体文本相同，已跳过"
+                             f"（2 字词时两种模式等价）")
+                continue
+            produced.add(p["new_text"])
             seq += 1
             variants.append({
                 "source_id": sid,
@@ -271,12 +279,21 @@ def self_test() -> int:
          "split": "dev"},
     ]
     vs, fs = generate(rows, ["adjacent", "reverse"], "graphic", require_label=True)
-    chk("批量条数", len(vs), 2)                     # 第 1 行两种模式各 1 条
+    chk("批量条数", len(vs), 1)                     # 2 字词两种模式等价 → 去重后只剩 1 条
     chk("批量 source_id", sorted({v["source_id"] for v in vs}), ["toxi-aaaaaaaaaa"])
     chk("批量 split 继承", {v["split"] for v in vs}, {"train"})
     chk("批量 quality_pass", {v["quality_pass"] for v in vs}, {"pending"})
-    chk("批量 variant_id 唯一", len({v["variant_id"] for v in vs}), 2)
-    chk("失败被记录", len(fs), 2)                   # 非正例 + 缺 span
+    chk("批量 variant_id 唯一", len({v["variant_id"] for v in vs}), 1)
+    chk("批量文本无重复", len({v["text"] for v in vs}), len(vs))
+    chk("失败被记录", len(fs), 3)                   # 非正例 + 缺 span + 去重跳过
+
+    # 3 字词时两种模式**不同**，应产出 2 条
+    rows3 = [{"source_id": "toxi-dddddddddd", "text": "你这个王八蛋真行",
+              "target_span_start": "3", "target_span_end": "6", "toxicity_label": "1",
+              "split": "dev"}]
+    vs3, _ = generate(rows3, ["adjacent", "reverse"], "graphic", require_label=True)
+    chk("3 字词两种模式各 1 条", len(vs3), 2)
+    chk("3 字词文本不同", len({v["text"] for v in vs3}), 2)
 
     if fails:
         print(f"[FAIL] 自测 {len(fails)}/{n[0]} 项失败：")
