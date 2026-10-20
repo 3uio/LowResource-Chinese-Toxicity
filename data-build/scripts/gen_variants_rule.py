@@ -56,6 +56,13 @@ try:
 except ImportError:  # pragma: no cover
     HAS_PYPINYIN = False
 
+# 同音程度判定（D 要求区分 perfect / near），与校验器共用同一份实现
+try:
+    from homophone_type import classify as classify_homophone  # type: ignore
+    HAS_HOMO_TYPE = True
+except ImportError:  # pragma: no cover
+    HAS_HOMO_TYPE = False
+
 
 # ---------------------------------------------------------------- 常量
 FAMILY_OF = {
@@ -352,9 +359,15 @@ RULES = {
 OUT_COLS = [
     "source_id", "variant_id", "text", "attack_family", "attack_type",
     "secondary_attack_types", "is_adversarial", "generation_method",
-    "generation_rule_id", "recoverability", "semantic_score_raw",
-    "semantic_score_normalized", "quality_pass", "qc_reviewer_1",
-    "qc_reviewer_2", "qc_arbiter", "split", "substitution_unit",
+    "generation_rule_id", "recoverability",
+    # D 的正式命名：raw（原始余弦）/ 01（归一化）/ restored（待 D 定义含义）
+    "semantic_score_raw", "semantic_score_01", "semantic_score_restored",
+    "quality_pass", "qc_reviewer_1",
+    "qc_reviewer_2", "qc_arbiter", "split",
+    # char / word（docs/07 整词为主 + 字级兜底）
+    "substitution_unit",
+    # perfect / near / far（D 要求，见 scripts/homophone_type.py）
+    "homophone_type",
 ]
 
 
@@ -376,6 +389,11 @@ def main(argv=None) -> int:
                          "用途：防止「最容易生成的类」把变体总量撑爆 —— "
                          "实测 Sym_Separator 不设限时每种子产 5 条，"
                          "占全部变体的一半，会让攻击类型分布严重偏斜。")
+    ap.add_argument("--allow-placeholder", action="store_true",
+                    help="允许加载脚本内置的**占位示例映射**（仅演示用）。"
+                         "默认关闭：没有正式映射表就产出 0 条并报警。"
+                         "B 2026-10 要求：内置示例映射必须与正式映射区分，"
+                         "防止测试数据混入正式产物。")
     args = ap.parse_args(argv)
 
     quota = {}
@@ -414,19 +432,34 @@ def main(argv=None) -> int:
     for k in ("homo_word", "similar_word", "leet_word", "emoji_word"):
         if maps[k]:
             print(f"[info] 整词表 {k}: {len(maps[k])} 个目标词")
-    # 内置占位表兜底
-    for k, v in PLACEHOLDER_PINYIN.items():          # 拼音表：str -> str
-        maps["pinyin"].setdefault(k, v)
-    for key, fallback in (
-        ("homo", PLACEHOLDER_HOMOPHONE),
-        ("similar", PLACEHOLDER_SIMILAR),
-        ("leet", PLACEHOLDER_LEET),
-        ("emoji", PLACEHOLDER_EMOJI),
-    ):
-        for k, v in fallback.items():
-            maps[key].setdefault(k, v if isinstance(v, list) else [v])
-    for k, v in PLACEHOLDER_SPLIT.items():
-        maps["split"].setdefault(k, v)
+    # ---- 内置占位表：默认**不启用**
+    # B 于 2026-10 指出：内置示例映射必须与正式映射区分，防止测试数据混入正式产物。
+    # 这里改成：只有显式传 --allow-placeholder 才加载占位表；
+    # 默认情况下，没有正式映射表就产出 0 条并报警 —— 宁可空，不可混。
+    if args.allow_placeholder:
+        print("[WARN] --allow-placeholder 已开：正在加载**内置占位映射**。"
+              "这些映射只为演示，**不得用于正式交付**。")
+        for k, v in PLACEHOLDER_PINYIN.items():
+            maps["pinyin"].setdefault(k, v)
+        for key, fallback in (
+            ("homo", PLACEHOLDER_HOMOPHONE),
+            ("similar", PLACEHOLDER_SIMILAR),
+            ("leet", PLACEHOLDER_LEET),
+            ("emoji", PLACEHOLDER_EMOJI),
+        ):
+            for k, v in fallback.items():
+                maps[key].setdefault(k, v if isinstance(v, list) else [v])
+        for k, v in PLACEHOLDER_SPLIT.items():
+            maps["split"].setdefault(k, v)
+    else:
+        empty = [k for k in ("homo", "similar", "split", "leet", "emoji",
+                             "homo_word", "similar_word", "leet_word",
+                             "emoji_word")
+                 if not maps[k]]
+        if empty:
+            print(f"[warn] 以下映射表为空（占位表默认不启用）：{', '.join(empty)}")
+            print("       这些 attack_type 将产出 0 条。")
+            print("       演示时可用 --allow-placeholder 临时启用内置示例映射。")
 
     enabled = [t.strip() for t in args.attack_types.split(",") if t.strip()]
     bad = [t for t in enabled if t not in RULES]
@@ -530,12 +563,18 @@ def main(argv=None) -> int:
                     "generation_method": "rule",
                     "generation_rule_id": f"{at.upper()}-001",
                     "recoverability": "",          # 人工/后续填写
-                    "semantic_score_raw": "",      # 待语义打分
-                    "semantic_score_normalized": "",
+                    "semantic_score_raw": "",      # 待语义打分（D-1：bge-large-zh-v1.5）
+                    "semantic_score_01": "",       # 归一化到 [0,1]，待打分
+                    "semantic_score_restored": "",  # D 新增字段，含义待 D 明确
                     "quality_pass": "pending",     # 必须人工质检
                     "qc_reviewer_1": "", "qc_reviewer_2": "", "qc_arbiter": "",
                     "split": seed.get("split", ""),
                     "substitution_unit": unit,     # char / word（见 docs/07）
+                    # 同音程度：只对 Homo 有意义；其余类留空（不是谐音替换）
+                    "homophone_type": (
+                        classify_homophone(span, cand)
+                        if (at == "Homo" and HAS_HOMO_TYPE) else ""
+                    ),
                 })
                 produced += 1
                 coverage[at][f"单位:{unit}"] += 1

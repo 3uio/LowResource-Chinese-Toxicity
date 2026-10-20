@@ -51,6 +51,20 @@ SEED_COLS = ["source_id", "text", "target_span_start", "target_span_end",
 VARIANT_COLS = ["source_id", "variant_id", "text", "attack_family", "attack_type",
                 "is_adversarial", "generation_method", "quality_pass", "split"]
 
+# 可选列：出现则校验取值，不出现不报错（向后兼容旧产物）
+OPTIONAL_VARIANT_COLS = {
+    # 替换单位：char=字级，word=整词级（见 docs/07_替换单位决策记录.md）
+    "substitution_unit": {"char", "word"},
+    # 同音程度：D 要求区分完美同音 / 近似同音（见 scripts/homophone_type.py）
+    "homophone_type": {"perfect", "near", "far"},
+}
+
+# 字段命名迁移（D 的正式命名，见 docs/11 §3.2）
+#   semantic_score_normalized  → semantic_score_01
+# 旧名仍接受但会给出提示，避免旧数据直接失效。
+RENAMED_COLS = {"semantic_score_normalized": "semantic_score_01"}
+NEW_COLS = ["semantic_score_01", "semantic_score_restored"]
+
 VALID_SPLITS = {"train", "dev", "test"}
 VALID_METHODS = {"rule", "llm", "manual"}
 VALID_QPASS = {"pass", "fail", "pending"}
@@ -135,6 +149,11 @@ def main(argv=None) -> int:
     ap.add_argument("--safe-control", type=Path)
     ap.add_argument("--exclusion", type=Path,
                     help="表5 排除清单（table5_exclusion_list.csv）")
+    ap.add_argument("--require-exclusion", action="store_true",
+                    help="【正式交付必开】表5 排除清单缺失或为空时**非零退出**。"
+                         "B 于 2026-10 提出：正式验证不能只给 warn，"
+                         "否则『泄漏检查通过』这句话是空的。"
+                         "默认关闭仅为方便本地快速联调。")
     args = ap.parse_args(argv)
 
     if not any([args.seeds, args.variants, args.safe_control]):
@@ -150,6 +169,15 @@ def main(argv=None) -> int:
         print("       请先安装：python -m pip install zhconv")
         print(f"       应有口径：{NORM_STEPS}")
         print("       （继续执行，但泄漏检查结论不得用于交付）\n")
+
+    # --require-exclusion 意味着「我要正式交付」。
+    # 此时若连 --exclusion 都没给，等于关掉了整段泄漏检查 —— 必须直接失败，
+    # 否则会出现「跑过了校验、但压根没查表5」的假通过（B 提的正是这一点）。
+    if args.require_exclusion and not args.exclusion:
+        print("[FAIL] --require-exclusion 已开，但没有提供 --exclusion。")
+        print("       正式交付必须跑表5 泄漏检查；请提供排除清单，")
+        print("       或去掉 --require-exclusion（仅限本地联调）。")
+        return 2
 
     rep = Report()
     seed_rows, seed_ids = [], set()
@@ -229,12 +257,27 @@ def main(argv=None) -> int:
                     if (r.get("quality_pass") or "").strip() not in VALID_QPASS:
                         rep.err(f"变体表 行{i} ({vid}): quality_pass 非法")
 
-                    # substitution_unit：可选列（旧产物没有），有则必须是 char/word
-                    # 依据 docs/07_替换单位决策记录.md（整词为主 + 字级兜底）
-                    unit = (r.get("substitution_unit") or "").strip()
-                    if unit and unit not in VALID_UNITS:
-                        rep.err(f"变体表 行{i} ({vid}): substitution_unit "
-                                f"非法 '{unit}'，应为 {sorted(VALID_UNITS)} 或留空")
+                    # 可选枚举列：出现则校验取值（旧产物没有不报错）
+                    #   substitution_unit —— docs/07（整词为主 + 字级兜底）
+                    #   homophone_type    —— D 要求，见 scripts/homophone_type.py
+                    for col, allowed in OPTIONAL_VARIANT_COLS.items():
+                        v = (r.get(col) or "").strip()
+                        if v and v not in allowed:
+                            rep.err(f"变体表 行{i} ({vid}): {col} "
+                                    f"非法 '{v}'，应为 {sorted(allowed)} 或留空")
+
+                    # semantic_score_restored：D 新增字段，必须是 0–1 的浮点或留空。
+                    # 含义待 D 明确（见 docs/11 §3.2），此处只校验类型与范围。
+                    ssr = (r.get("semantic_score_restored") or "").strip()
+                    if ssr:
+                        try:
+                            f = float(ssr)
+                            if not (0.0 <= f <= 1.0):
+                                rep.err(f"变体表 行{i} ({vid}): "
+                                        f"semantic_score_restored={f} 越界，应 0–1")
+                        except ValueError:
+                            rep.err(f"变体表 行{i} ({vid}): "
+                                    f"semantic_score_restored='{ssr}' 不是数字")
 
                     if sp not in VALID_SPLITS:
                         rep.err(f"变体表 行{i} ({vid}): split 非法 '{sp}'")
@@ -253,12 +296,17 @@ def main(argv=None) -> int:
     # ---------------------------------------------------------- 表5 泄漏查重
     if args.exclusion:
         if not args.exclusion.exists():
-            rep.err(f"排除清单不存在：{args.exclusion}")
+            msg = f"排除清单不存在：{args.exclusion}"
+            (rep.err if args.require_exclusion else rep.warn)(msg)
         else:
             ex_rows, ex_cols = read_csv(args.exclusion)
             if not ex_rows:
-                rep.warn("排除清单为空 —— 表5 泄漏检查实际上没有生效。"
-                         "拉取到表5 数据后必须回填（可只填哈希列）。")
+                msg = ("排除清单为空 —— 表5 泄漏检查实际上没有生效。"
+                       "拉取到表5 数据后必须回填（可只填哈希列）。")
+                if args.require_exclusion:
+                    rep.err(msg + " 【--require-exclusion 已开：正式交付禁止此状态】")
+                else:
+                    rep.warn(msg)
             else:
                 ex_sha, ex_norm = set(), set()
                 for r in ex_rows:
