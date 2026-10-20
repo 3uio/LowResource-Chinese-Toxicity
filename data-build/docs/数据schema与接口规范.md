@@ -132,11 +132,34 @@ NFKC（统一全/半角、统一兼容字符）
 | `generation_method` | ✅ | `rule`（C）/ `llm`（D）/ `manual` |
 | `generation_rule_id` | ✅ | 规则 ID，或 prompt 模板 ID + 模型版本 |
 | `recoverability` | ⬜ | `recoverable` / `unrecoverable`（**建议新增**，用于 MR 判定） |
-| `semantic_score_raw` / `_normalized` | ⬜ | 口径见 §6 |
+| `semantic_score_raw` | ⬜ | 原始余弦相似度，口径见 §6 |
+| `semantic_score_01` | ⬜ | 归一化到 `[0,1]`。**按 D 的正式命名；旧名 semantic_score_normalized 已废弃** |
+| `semantic_score_restored` | ⬜ | **D 新增字段，含义待 D 明确** |
 | `quality_pass` | ✅ | `pass` / `fail` / `pending` |
 | `qc_reviewer_1` / `qc_reviewer_2` / `qc_arbiter` | ⬜ | 质检留痕（**必须是未生成该批数据的人**） |
 | `split` | ✅ | **必须等于该 `source_id` 在种子表中的 split** |
 | `substitution_unit` | ⬜ | **`char`（字级）/ `word`（整词级）**，见 §3.3 |
+| `homophone_type` | ⬜ | **`perfect` / `near` / `far`**，仅 `Homo` 有值，见 §3.4 |
+
+### 3.4 `homophone_type`：同音程度（D 2026-10 要求新增）
+
+依据 Guo et al. 2025（EMNLP Industry, [arXiv:2507.07640](https://arxiv.org/abs/2507.07640)）的 PCR 分类：
+
+| 取值 | 判据 | 说明 |
+|---|---|---|
+| `perfect` | 每个替换字的**声母 + 韵母 + 声调全同** | 标准同音词 |
+| `near` | **声调偏移**，或声母/韵母为**声学相邻音** | 真实用户主力；模型盲区 |
+| `far` | 有一处声母或韵母差异较大 | 伪装不成立，**不应计入 `Homo`** |
+
+**声学相邻音分组**（实现见 `scripts/homophone_type.py`）：
+- 声母：`z/zh`、`c/ch`、`s/sh`、`n/l`、`r/l`、`f/h`、`b/p`、`d/t`、`g/k`、`j/q/x`、`z/c/s`
+- 韵母：前后鼻音（`an/ang`、`en/eng`、`in/ing`）、`o/e/ou/uo`、`i/u/ü`
+
+**实测分布**（200 条种子）：`Homo` 168 条 = `perfect` 126 / `near` 42。
+**可复现**：`python scripts/homophone_type.py` 跑 14 条自检样例。
+
+> ⚠️ **待评审**：`far` 的变体是否应从 `Homo` 剔除、还是保留并标注。
+> 当前生成器照常输出，由质检判 `quality_pass`。
 
 ### 3.3 `substitution_unit`：替换单位的记录（2026-02-05 新增）
 
@@ -254,7 +277,7 @@ NFKC（统一全/半角、统一兼容字符）
 | 计算对象 | 种子原文 vs 变体文本（**句级**） |
 | 工具 | 中文句向量模型（BGE / text2vec 系）余弦相似度 —— **需 D 指定具体模型 + 版本号** |
 | `semantic_score_raw` | 原始余弦值，范围 `[-1, 1]` |
-| `semantic_score_normalized` | `(raw + 1) / 2` → `[0, 1]` |
+| `semantic_score_01` | `(raw + 1) / 2` → `[0, 1]` |
 | 版本记录 | **必须**记录模型名 + 版本号，否则跨批次不可比 |
 
 ⚠️ **不要预设阈值。** 语义相似度对**谐音类**会偏高、对**形近字类**会偏低，**阈值必须按 8 小类分别用实测分布倒推**——与 V2 对 DAPT 止损线的处理原则一致（不套用外部文献数字）。
@@ -267,7 +290,7 @@ NFKC（统一全/半角、统一兼容字符）
 
 1. **可读性**：受过中等教育的母语者能读回原词／原攻击意图；
 2. **自然性**：像真实网络用语，不是机器硬凑的生僻字串；
-3. **语义保持**：`semantic_score_normalized` ≥ 阈值（**阈值不预设**，pilot 后倒推）；
+3. **语义保持**：`semantic_score_01` ≥ 阈值（**阈值不预设**，pilot 后倒推）；
 4. **无泄漏**：未从表5 派生；
 5. **无重复**：与已有变体不重复。
 
