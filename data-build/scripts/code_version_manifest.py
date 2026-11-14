@@ -53,6 +53,7 @@ ROLES = {
     "gen_word_candidates.py": "整词同音候选生成",
     "curate_homophone.py": "谐音词表筛选（配额制）",
     "build_maps_graphsym.py": "建形近/leet/emoji 映射表",
+    "import_split_candidates.py": "把 A 的部件候选表导入为 split_char.csv（带过滤报告）",
     "pilot_log.py": "手工试跑记录 / 统计",
     "requirements.txt": "依赖清单",
 }

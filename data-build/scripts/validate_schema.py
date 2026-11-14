@@ -94,7 +94,13 @@ VALID_MAPPING_SOURCES = {"formal", "placeholder", "none"}
 FORBIDDEN_IN_FORMAL = {
     "mapping_source": {"placeholder"},
 }
-ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"), None)
+ZERO_WIDTH = dict.fromkeys(
+    # 2026-10-23 按 A《归一化说明》修正：范围比原来（只删 200B/200C/200D/FEFF）宽。
+    #   原实现会把 U+200E/U+200F（LRM/RLM）与 U+202A–U+202E（双向控制符）留在文本里，
+    #   导致哈希与 A 不一致 —— A 的 20 条边界样例里这 7 个字符全能暴露该差异。
+    list(range(0x200B, 0x2010)) + list(range(0x202A, 0x202F)) + [0xFEFF],
+    None,
+)
 
 # 繁转简：与 A 侧（Track A 的清洗脚本）保持一致，两边必须用同一个实现。
 # 缺这个库时**不能静默降级** —— 归一化哈希会与 A 不一致，跨表查重等于没查。
@@ -105,18 +111,26 @@ except ImportError:                                    # pragma: no cover
     _zh_convert = None
     HAS_ZHCONV = False
 
-NORM_STEPS = "NFKC → 去零宽与BOM → 去空白与标点 → 小写 → 繁转简(zhconv) → SHA-256"
+NORM_STEPS = ("五步文本归一化 + SHA-256："
+              "NFKC → 去隐形字符(U+200B–200F/U+202A–202E/U+FEFF) → 去空白与标点 → "
+              "小写 → 繁转简(zhconv) → SHA-256")
 
 
 def norm(text: str) -> str:
-    """归一化（五步，与 Track A 的实现严格一致）。
+    """归一化（**五步**，与 Track A 的实现严格一致）。
+
+    ⚠️ 口径澄清（A《归一化说明》2026-10-20）：
+      A 历史审计里写的是 `C_six_steps_zhconv_1.4.3`，但**"六步"= 五步文本归一化 + SHA-256**，
+      **不是**"去噪 + 五步"。HTML/URL/@ 的删除属 A 的 denoise() 独立预处理，不属于这五步。
 
     顺序固定，**不得改动** —— 顺序不同则哈希不同，两边查重结果对不上：
         NFKC（全/半角、兼容字符统一）
-        → 去零宽字符（U+200B/200C/200D/FEFF）与 BOM
-        → 去全部空白与标点
-        → 转小写
-        → 繁转简（zhconv，缺库时为空操作并已在 main() 报警）
+        → 去隐形字符（U+200B–U+200F、U+202A–U+202E、U+FEFF）
+        → 去全部空白（str.isspace）与标点（Unicode category 以 P 开头）
+        → 转小写（str.lower，**不是 casefold**）
+        → 繁转简（zhconv convert(text,'zh-cn')，缺库时为空操作并已在 main() 报警）
+
+    注意：category=S（emoji/符号）**不删**。也不要额外删 Cf 或变体选择符。
     """
     t = unicodedata.normalize("NFKC", text)
     t = t.translate(ZERO_WIDTH)
