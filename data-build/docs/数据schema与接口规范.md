@@ -1,10 +1,12 @@
 # 数据 Schema 与接口规范（Track C → B / D）
 
 > **维护**：Track C（跨语言链路 + 数据构建）
-> **依据**：V2.md 第 4、5、6 节；`数据构建/docs/` 下的字段与规则文档
+> **依据**：V2.md 第 4、5、6 节；`数据构建/docs/` 下的字段与规则文档；B《撤回确认与新版交付要求》（2026-10-23）
 > **状态**：**草案，待团队评审后冻结**
 > **用途**：把 C 线的数据约定**一次性讲清**，让 B（检测实验矩阵）和 D（评估体系 + LLM 型变体）不必回头问字段格式。
 > 建立日期：2026-02-05
+> **版本**：v0.4（2026-10-23）— 新增 §3.5 字段级联调/正式标记 4 字段；`validate_schema` 改为**默认严格模式**（排除清单缺失/为空/版本不符即失败，本地联调须显式 `--pilot`）；补回归测试 `test_formal_gate.py`
+> 版本历史：v0.3 加 `homophone_type` 与 `semantic_score_01/restored`；v0.2 加 `substitution_unit` 与整词优先规则
 
 ---
 
@@ -140,6 +142,40 @@ NFKC（统一全/半角、统一兼容字符）
 | `split` | ✅ | **必须等于该 `source_id` 在种子表中的 split** |
 | `substitution_unit` | ⬜ | **`char`（字级）/ `word`（整词级）**，见 §3.3 |
 | `homophone_type` | ⬜ | **`perfect` / `near` / `far`**，仅 `Homo` 有值，见 §3.4 |
+| `is_pilot` | ✅ | **`0` / `1`**。`1` = 联调/演示数据，**正式交付必须全为 0**，见 §3.5 |
+| `mapping_source` | ✅ | **`formal` / `placeholder` / `none`**，见 §3.5 |
+| `mapping_version` | ✅ | 正式映射=映射表目录内容哈希（`rm-xxxxxxxxxxxx`）；占位=`placeholder`；不需要=`none` |
+| `generation_batch_id` | ✅ | 生成批次号，可追溯到「种子文件哈希 + 配置 + 映射版本」，见 §3.5 |
+
+### 3.5 字段级「联调/正式」标记（B 2026-10-23 要求新增）
+
+**为什么不能只靠文件名**：`pilot_*.csv` 这种约定靠人记，一旦改名或直接改内容就失效，
+而"占位映射产物混进正式数据"正是最难在事后发现、后果最严重的一类污染。
+所以把这四件事写进**每一行**：
+
+| 字段 | 取值 | 谁填 | 含义 |
+|---|---|---|---|
+| `is_pilot` | `0` / `1` | 生成器 | 本行是否属于联调/演示批次。**用了占位映射时生成器自动置 1**，不依赖人工记得加 flag |
+| `mapping_source` | `formal` | 生成器 | 替换来自 `--rules-dir` 指向的**正式映射表** |
+| | `placeholder` | 生成器 | 来自脚本内置占位表（仅演示） |
+| | `none` | 生成器 | **不依赖映射表**：`PY_Full`/`PY_Abbr`（走 pypinyin）、`Sym_Separator`（只插分隔符） |
+| `mapping_version` | `rm-<12 位>` | 生成器 | 正式映射目录的内容哈希（文件名 + 各文件字节）。**任一表被改，版本即变** |
+| | `placeholder` / `none` | 生成器 | 同 `mapping_source` 的对应情形 |
+| `generation_batch_id` | `gb-<10 位>` | 生成器 | 由「种子文件 SHA-256 + 配置 + 映射版本」派生；**同配置可复现同批次号**。可用 `--batch-id` 覆盖 |
+
+**正式验证的拒绝规则**（`validate_schema.py` 默认 formal 模式，B 2026-10-23 §三.2）：
+
+| 情况 | 结果 |
+|---|---|
+| 缺 `is_pilot` / `mapping_source` / `mapping_version` / `generation_batch_id` 列 | ❌ 失败（报"缺字段级标记列"） |
+| 任一行的标记为空 | ❌ 失败 |
+| `is_pilot = 1` | ❌ 失败（联调/演示数据不得进入正式交付） |
+| `mapping_source = placeholder` | ❌ 失败（占位映射产物不得进入正式交付） |
+| `mapping_version` 与本次声明的映射版本不一致 | ⚠️ 需人工核对（版本号本身已是内容哈希） |
+
+> **注意**：`mapping_source=formal` **不等于**样本质量合格 —— 它只说明"替换来自正式映射表"。
+> 质量仍由双人独立质检 + 仲裁给出（D-2），落 `quality_pass`。
+> 生成器另有 `--batch-log <path>` 可写出本次生成配置 JSON（含输出文件 SHA-256），便于全程追溯。
 
 ### 3.4 `homophone_type`：同音程度（D 2026-10 要求新增）
 
@@ -334,15 +370,40 @@ V2 第 5 节要求 `source_id` grouped bootstrap + McNemar + Holm correction。
 | `scripts/gen_variants_rule.py` | 规则型变体生成器（只替换 `target_span` 内的字，其余不动） |
 | `scripts/pilot_log.py` | 手工试跑记录 / 计时 / 统计 / 出报告 |
 
-**交付前必跑：**
+**交付前必跑（正式验证 = 默认严格模式，B 2026-10-23 §三.1）：**
 
-```powershell
-python scripts/validate_schema.py `
-    --seeds data/raw/seeds/seed_candidates.csv `
-    --variants out/variants.csv `
-    --exclusion data/templates/table5_exclusion_list.csv
-# 退出码为 0 才允许提交
+```bash
+# 正式验证（默认 formal）：排除清单缺失 / 不存在 / 为空 / 版本不符 → 一律失败
+python scripts/validate_schema.py \
+    --seeds      data/raw/seeds/seed_candidates.csv \
+    --variants   out/variants.csv \
+    --exclusion  data/templates/table5_exclusion_list.csv \
+    --expect-exclusion-sha256 <交付时声明的清单 SHA-256>
+# 退出码 0 才允许提交；报告里会打印排除清单的 SHA-256（即"清单版本"）
+
+# 本地快速联调（必须显式声明，报告会标 [PILOT]，不构成验收依据）
+python scripts/validate_schema.py --variants out/demo.csv --pilot
 ```
+
+| 参数 | 作用 |
+|---|---|
+| `--mode formal`（默认） | 严格模式 |
+| `--mode pilot` / `--pilot` | 本地联调：缺失/为空的排除清单与缺失标记只告警；**打印 PILOT 横幅，明确不构成正式验收** |
+| `--exclusion <path>` | 表5 排除清单（**formal 模式必填**） |
+| `--expect-exclusion-sha256 <hex>` | 锁定清单版本；不一致即失败，防止"用错版本的清单跑出通过" |
+| `--require-exclusion` | 已废弃（formal 已是默认），保留仅为兼容旧命令 |
+| `--safe-control` | 一并检查表3 的泄漏 |
+
+**回归测试（B 明确要求提供）：**
+
+```bash
+python scripts/test_formal_gate.py        # A 组 7 条 + B 组 6 条 + C 组 5 条 = 18 条断言
+python scripts/validate_formal.py --seeds ... --variants ...   # 包装器：空清单直接拒绝 + 写日志
+```
+
+`test_formal_gate.py` 覆盖：排除清单缺失/不存在/为空/版本不符四类阻断、
+`--pilot` 才放宽、正式模式拒绝 `is_pilot=1` 与 `mapping_source=placeholder`、
+缺标记列/空标记被拒、以及生成器在「正式映射 / 占位映射 / 无映射」三种模式下的标记取值。
 
 ---
 

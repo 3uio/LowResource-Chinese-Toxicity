@@ -109,7 +109,9 @@ def main(argv: list[str] | None = None) -> int:
         cmd += ["--seeds", str(args.seeds)]
     if args.variants:
         cmd += ["--variants", str(args.variants)]
-    cmd += ["--exclusion", str(excl), "--require-exclusion"]
+    # 2026-10-23 起 validate_schema 默认就是 formal（严格）模式；
+    # 这里显式写 --mode formal，让命令本身自证"这是正式验证"。
+    cmd += ["--exclusion", str(excl), "--mode", "formal"]
 
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     r = subprocess.run(cmd, cwd=str(T), capture_output=True, text=True,
@@ -124,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         fh.write(f"> 时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
         fh.write(f"> 排除清单：`{excl.name}`（{n_ex} 行）\n")
         fh.write("> 本日志由 `scripts/validate_formal.py` 生成；"
-                 "**强制带 `--require-exclusion`**，空清单会被直接拒绝。\n\n")
+                 "**强制以 `--mode formal` 运行**，空清单会被直接拒绝。\n\n")
         fh.write("## 命令\n\n```bash\npython scripts/validate_schema.py "
                  + shown + "\n```\n\n")
         fh.write(f"## 退出码：{r.returncode}\n\n")

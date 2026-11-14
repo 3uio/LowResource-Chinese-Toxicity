@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import random
 import sys
 from collections import Counter, defaultdict
@@ -375,7 +376,53 @@ OUT_COLS = [
     "substitution_unit",
     # perfect / near / far（D 要求，见 scripts/homophone_type.py）
     "homophone_type",
+    # ---- 字段级标记（B 2026-10-23 要求：不能只靠文件名区分联调/正式）----
+    "is_pilot",              # 1 = 联调/演示数据，不得进入正式交付
+    "mapping_source",        # formal / placeholder / none（不依赖映射）
+    "mapping_version",       # 正式映射=目录内容哈希；占位=placeholder；不需要=none
+    "generation_batch_id",   # 可追溯到种子文件+配置+映射版本
 ]
+
+
+# 每个 attack_type 依赖哪些映射表键（用于判定 mapping_source）
+# 注意：PY_Full / PY_Abbr 只有在**缺 pypinyin**时才退化为读 maps["pinyin"]，
+#       装了 pypinyin 时它们不依赖任何映射表 —— 见 mapping_source_of()
+MAP_KEYS_OF_TYPE = {
+    "PY_Full": {"pinyin"},
+    "PY_Abbr": {"pinyin"},
+    "Homo": {"homo", "homo_word"},
+    "Graph_Similar": {"similar", "similar_word"},
+    "Graph_Split": {"split"},
+    "Sym_Leet": {"leet", "leet_word"},
+    "Emoji_Sub": {"emoji", "emoji_word"},
+    "Sym_Separator": set(),
+}
+# 装了 pypinyin 就完全不依赖映射表的类
+PYPINYIN_ONLY_TYPES = {"PY_Full", "PY_Abbr"}
+
+
+def rules_version(dirpath: Path | None) -> str:
+    """映射表目录的「版本」= 文件清单 + 各文件内容哈希，取前 12 位。
+
+    这样只要任何一张表被改过，版本号就变，交付时能确认「用的是哪一版映射」。
+    """
+    if dirpath is None or not Path(dirpath).is_dir():
+        return "none"
+    h = hashlib.sha256()
+    for p in sorted(Path(dirpath).glob("*.csv")):
+        h.update(p.name.encode("utf-8"))
+        h.update(p.read_bytes())
+    return "rm-" + h.hexdigest()[:12]
+
+
+def file_sha(path: Path | None) -> str:
+    if path is None or not Path(path).exists():
+        return "none"
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def main(argv=None) -> int:
@@ -401,6 +448,15 @@ def main(argv=None) -> int:
                          "默认关闭：没有正式映射表就产出 0 条并报警。"
                          "B 2026-10 要求：内置示例映射必须与正式映射区分，"
                          "防止测试数据混入正式产物。")
+    ap.add_argument("--pilot", action="store_true",
+                    help="把本批产物标为**联调/演示数据**（is_pilot=1）。"
+                         "B 2026-10-23 要求：正式产物不得含 is_pilot=1；"
+                         "使用占位映射时会自动置 1。")
+    ap.add_argument("--batch-id", default=None,
+                    help="生成批次号。默认由「种子文件哈希 + 配置 + 映射版本」派生，"
+                         "保证同配置可复现同批次号")
+    ap.add_argument("--batch-log", default=None, type=Path,
+                    help="把本次生成配置写成 JSON（含各输入文件哈希），便于追溯")
     args = ap.parse_args(argv)
 
     quota = {}
@@ -439,6 +495,13 @@ def main(argv=None) -> int:
     for k in ("homo_word", "similar_word", "leet_word", "emoji_word"):
         if maps[k]:
             print(f"[info] 整词表 {k}: {len(maps[k])} 个目标词")
+
+    # ---- 记录「正式映射」在加载占位表**之前**的可用状态
+    # 用来判定每行 mapping_source 是 formal 还是 placeholder（B 2026-10-23）
+    formal_tables = {k: bool(v) for k, v in maps.items()}
+    placeholder_filled: set[str] = set()
+    rmv = rules_version(rd)
+    print(f"[info] 映射版本：{rmv}")
     # ---- 内置占位表：默认**不启用**
     # B 于 2026-10 指出：内置示例映射必须与正式映射区分，防止测试数据混入正式产物。
     # 这里改成：只有显式传 --allow-placeholder 才加载占位表；
@@ -458,6 +521,7 @@ def main(argv=None) -> int:
                 maps[key].setdefault(k, v if isinstance(v, list) else [v])
         for k, v in PLACEHOLDER_SPLIT.items():
             maps["split"].setdefault(k, v)
+        placeholder_filled = {k for k, v in formal_tables.items() if not v}
     else:
         empty = [k for k in ("homo", "similar", "split", "leet", "emoji",
                              "homo_word", "similar_word", "leet_word",
@@ -507,6 +571,52 @@ def main(argv=None) -> int:
     coverage: dict[str, Counter] = defaultdict(Counter)
     seen_texts: set[str] = set()
     counter: dict[tuple[str, str], int] = defaultdict(int)
+
+    # ---- 批次号与 pilot 判定（B 2026-10-23 的字段级标记要求）
+    seeds_sha = file_sha(args.seeds)
+    cfg = {
+        "seeds": args.seeds.name, "seeds_sha256": seeds_sha,
+        "rules_dir": str(args.rules_dir) if args.rules_dir else None,
+        "mapping_version": rmv,
+        "attack_types": enabled, "per_type_quota": quota,
+        "seed": args.seed, "limit": args.limit,
+        "allow_placeholder": bool(args.allow_placeholder),
+        "pilot": bool(args.pilot),
+    }
+    if args.batch_id:
+        batch_id = args.batch_id
+    else:
+        h = hashlib.sha256(
+            (seeds_sha + rmv + repr(sorted(cfg.items()))).encode("utf-8")).hexdigest()
+        batch_id = "gb-" + h[:10]
+    # 用了占位映射 → 整批必然是联调数据，自动置 pilot（不靠人工记得加 --pilot）
+    is_pilot_row = 1 if (args.pilot or placeholder_filled) else 0
+    print(f"[info] 批次号 {batch_id}；is_pilot={is_pilot_row}"
+          + ("（含占位映射，只能是联调数据）" if placeholder_filled else ""))
+    if placeholder_filled:
+        print(f"[WARN] 本批使用了占位映射（{sorted(placeholder_filled)}），"
+              f"is_pilot 已置 1，**不得进入正式交付**。")
+
+    def mapping_source_of(at: str) -> str:
+        """formal / placeholder / none —— 说明这一行的替换来自哪种映射。
+
+        `none` 的含义是「不依赖任何映射表」（不是"查不到"）：
+          * PY_Full / PY_Abbr 在装了 pypinyin 时属此类；
+          * Sym_Separator 只插分隔符，也属此类。
+        """
+        if at in PYPINYIN_ONLY_TYPES and HAS_PYPINYIN:
+            return "none"
+        need = MAP_KEYS_OF_TYPE.get(at, set())
+        if not need:
+            return "none"
+        # 只要有一个占位表参与，就按 placeholder 记（保守：宁可标低）
+        if any(k in placeholder_filled for k in need):
+            return "placeholder"
+        # 只要有一个正式表存在，该类的替换就来自正式映射
+        # （例：Homo 有 homophone_word.csv 但无字级 homophone.csv，仍算 formal）
+        if any(formal_tables.get(k) for k in need):
+            return "formal"
+        return "none"
 
     for seed in seeds:
         sid = seed["source_id"].strip()
@@ -559,6 +669,7 @@ def main(argv=None) -> int:
                     continue
                 seen_texts.add(new_text)
                 counter[(sid, at)] += 1
+                _ms = mapping_source_of(at)
                 rows.append({
                     "source_id": sid,
                     "variant_id": f"r-{sid}-{at}-{counter[(sid, at)]:02d}",
@@ -582,6 +693,12 @@ def main(argv=None) -> int:
                         classify_homophone(span, cand)
                         if (at == "Homo" and HAS_HOMO_TYPE) else ""
                     ),
+                    # 字段级标记（B 2026-10-23）
+                    "is_pilot": is_pilot_row,
+                    "mapping_source": _ms,
+                    "mapping_version": ("placeholder" if _ms == "placeholder"
+                                        else rmv if _ms == "formal" else "none"),
+                    "generation_batch_id": batch_id,
                 })
                 produced += 1
                 coverage[at][f"单位:{unit}"] += 1
@@ -621,6 +738,25 @@ def main(argv=None) -> int:
         print("\n跳过原因 Top10：")
         for reason, n in skip_reason.most_common(10):
             print(f"  {n:>5}  {reason}")
+
+    # ---- 批次日志（B 2026-10-23：generation_batch_id 要能追溯配置与映射版本）
+    if args.batch_log:
+        import json
+        args.batch_log.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "generation_batch_id": batch_id,
+            "is_pilot": is_pilot_row,
+            "mapping_version": rmv,
+            "placeholder_tables_used": sorted(placeholder_filled),
+            "output_sha256": file_sha(args.out),
+            "output_rows": len(rows),
+            "output_by_type": {at: stats[f"产出:{at}"] for at in enabled},
+            "config": cfg,
+        }
+        with args.batch_log.open("w", encoding="utf-8") as fh:
+            json.dump(rec, fh, ensure_ascii=False, indent=2)
+        print(f"[ok] 批次日志 → {args.batch_log}")
+
     print("\n[next] 下一步：填写 semantic_score → 人工双人质检 → quality_pass"
           "（见 docs/02_数据schema与source_id规则.md §7）")
     return 0

@@ -51,6 +51,10 @@ FAMILY_OF = {
     "PY_Full": "phonetic", "PY_Abbr": "phonetic", "Homo": "phonetic",
     "Graph_Similar": "graphic", "Graph_Split": "graphic",
     "Sym_Leet": "symbolic", "Emoji_Sub": "symbolic", "Sym_Separator": "symbolic",
+    # ⚠️ `Swap`（换序）是**待 Q3 评审**的类（CNTP 有、我们的 8 小类没有）。
+    # 生成器 `scripts/gen_swap.py` 默认不启用；这里先登记家系，
+    # 否则它一旦产出就无法被校验器验证。Q3 若否掉，删掉这一行即可。
+    "Swap": "graphic",
 }
 
 SEED_COLS = ["source_id", "text", "target_span_start", "target_span_end",
@@ -77,6 +81,19 @@ VALID_METHODS = {"rule", "llm", "manual"}
 VALID_QPASS = {"pass", "fail", "pending"}
 # 替换单位：char=字级，word=整词级（见 docs/07_替换单位决策记录.md）
 VALID_UNITS = {"char", "word"}
+
+# 字段级标记（B 2026-10-23 要求）：不能只靠文件名区分"正式/联调"
+#   is_pilot              1 = 联调/演示数据，不得进入正式数据
+#   mapping_source        formal=正式映射 / placeholder=占位映射 / none=不依赖映射
+#   mapping_version       实际使用的映射版本（内容哈希）；不适用写 none
+#   generation_batch_id   可追溯到生成配置、规则与日志
+PILOT_MARKER_COLS = ["is_pilot", "mapping_source", "mapping_version",
+                     "generation_batch_id"]
+VALID_MAPPING_SOURCES = {"formal", "placeholder", "none"}
+# 正式模式下令牌：这些取值一律拒绝
+FORBIDDEN_IN_FORMAL = {
+    "mapping_source": {"placeholder"},
+}
 ZERO_WIDTH = dict.fromkeys(map(ord, "\u200b\u200c\u200d\ufeff"), None)
 
 # 繁转简：与 A 侧（Track A 的清洗脚本）保持一致，两边必须用同一个实现。
@@ -113,6 +130,15 @@ def norm(text: str) -> str:
 
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    """文件内容哈希（排除清单的「版本」用它表示）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def read_csv(path: Path):
@@ -156,12 +182,19 @@ def main(argv=None) -> int:
     ap.add_argument("--safe-control", type=Path)
     ap.add_argument("--exclusion", type=Path,
                     help="表5 排除清单（table5_exclusion_list.csv）")
+    ap.add_argument("--mode", choices=["formal", "pilot"], default="formal",
+                    help="formal=正式验证（默认，缺排除清单即失败）；"
+                         "pilot=本地联调（显式放宽，报告标为 PILOT 不构成验收）")
+    ap.add_argument("--pilot", action="store_true",
+                    help="等价于 --mode pilot（显式放宽，仅本地联调）")
+    ap.add_argument("--expect-exclusion-sha256", default=None,
+                    help="期望的排除清单 SHA-256；不一致即失败（防止用错版本）")
     ap.add_argument("--require-exclusion", action="store_true",
-                    help="【正式交付必开】表5 排除清单缺失或为空时**非零退出**。"
-                         "B 于 2026-10 提出：正式验证不能只给 warn，"
-                         "否则『泄漏检查通过』这句话是空的。"
-                         "默认关闭仅为方便本地快速联调。")
+                    help="【已废弃】formal 模式已是默认行为，保留该参数仅为兼容旧命令")
     args = ap.parse_args(argv)
+
+    mode = "pilot" if args.pilot else args.mode
+    formal = mode == "formal"
 
     if not any([args.seeds, args.variants, args.safe_control]):
         ap.print_help()
@@ -177,14 +210,21 @@ def main(argv=None) -> int:
         print(f"       应有口径：{NORM_STEPS}")
         print("       （继续执行，但泄漏检查结论不得用于交付）\n")
 
-    # --require-exclusion 意味着「我要正式交付」。
-    # 此时若连 --exclusion 都没给，等于关掉了整段泄漏检查 —— 必须直接失败，
-    # 否则会出现「跑过了校验、但压根没查表5」的假通过（B 提的正是这一点）。
-    if args.require_exclusion and not args.exclusion:
-        print("[FAIL] --require-exclusion 已开，但没有提供 --exclusion。")
-        print("       正式交付必须跑表5 泄漏检查；请提供排除清单，")
-        print("       或去掉 --require-exclusion（仅限本地联调）。")
+    # 正式模式的硬前提（B 2026-10-23：默认即严格）
+    #   —— 若连 --exclusion 都没给，等于关掉了整段泄漏检查，必须直接失败，
+    #      否则会出现「跑过了校验、但压根没查表5」的假通过。
+    if formal and not args.exclusion:
+        print("[FAIL] 正式模式（默认）必须提供 --exclusion 表5 排除清单。")
+        print("       本地快速联调请显式加 --pilot，"
+              "此时报告会标为 PILOT，不构成正式验收依据。")
         return 2
+    if not formal:
+        print("=" * 72)
+        print("[PILOT] 本次为**本地联调模式**，不是正式验证：")
+        print("        - 缺失/为空的排除清单只报警告，不阻断；")
+        print("        - 缺少字段级标记（is_pilot 等）只报警告；")
+        print("        - 本报告**不得**作为交付验收依据，也不能冒充正式通过报告。")
+        print("=" * 72)
 
     rep = Report()
     seed_rows, seed_ids = [], set()
@@ -231,6 +271,12 @@ def main(argv=None) -> int:
         else:
             rows, cols = read_csv(args.variants)
             if check_columns(rep, "变体表", cols, VARIANT_COLS):
+                # 缺整列时只报一次，不要逐行刷屏
+                missing_markers = [c for c in PILOT_MARKER_COLS if c not in cols]
+                if missing_markers:
+                    (rep.err if formal else rep.warn)(
+                        f"变体表缺字段级标记列 {missing_markers}"
+                        f"（B 2026-10-23 要求：不能只靠文件名区分联调/正式）")
                 seen_split: dict[str, set[str]] = defaultdict(set)
                 for i, r in enumerate(rows, start=2):
                     vid = (r.get("variant_id") or "").strip()
@@ -273,6 +319,32 @@ def main(argv=None) -> int:
                             rep.err(f"变体表 行{i} ({vid}): {col} "
                                     f"非法 '{v}'，应为 {sorted(allowed)} 或留空")
 
+                    # 字段级标记（B 2026-10-23）：正式模式必须齐全且取值合法，
+                    # 不能只靠文件名区分「联调/演示」与「正式」。
+                    for col in PILOT_MARKER_COLS:
+                        if col not in cols:
+                            continue
+                        v = (r.get(col) or "").strip()
+                        if not v:
+                            (rep.err if formal else rep.warn)(
+                                f"变体表 行{i} ({vid}): 字段级标记 {col} 为空"
+                                + ("（正式交付必须补齐，不能默认当成正式样本）"
+                                   if formal else ""))
+                            continue
+                        if col == "is_pilot":
+                            if v not in {"0", "1"}:
+                                rep.err(f"变体表 行{i} ({vid}): is_pilot 必须为 0/1")
+                            elif formal and v == "1":
+                                rep.err(f"变体表 行{i} ({vid}): is_pilot=1"
+                                        f"（联调/演示数据）**不得进入正式交付**")
+                        elif col == "mapping_source":
+                            if v not in VALID_MAPPING_SOURCES:
+                                rep.err(f"变体表 行{i} ({vid}): mapping_source 非法 "
+                                        f"'{v}'，应为 {sorted(VALID_MAPPING_SOURCES)}")
+                            elif formal and v in FORBIDDEN_IN_FORMAL["mapping_source"]:
+                                rep.err(f"变体表 行{i} ({vid}): mapping_source=placeholder"
+                                        f"（占位映射产物）**不得进入正式交付**")
+
                     # semantic_score_restored：D 新增字段，必须是 0–1 的浮点或留空。
                     # 含义待 D 明确（见 docs/11 §3.2），此处只校验类型与范围。
                     ssr = (r.get("semantic_score_restored") or "").strip()
@@ -304,14 +376,23 @@ def main(argv=None) -> int:
     if args.exclusion:
         if not args.exclusion.exists():
             msg = f"排除清单不存在：{args.exclusion}"
-            (rep.err if args.require_exclusion else rep.warn)(msg)
+            (rep.err if formal else rep.warn)(msg)
         else:
+            # 排除清单自身的哈希即「版本」：内容一变，哈希就变。
+            # 交付时必须把这个哈希一并报出，别人才能确认"查的是哪一版清单"。
+            excl_sha = sha256_file(args.exclusion)
+            rep.note(f"排除清单 SHA-256：{excl_sha}")
+            if args.expect_exclusion_sha256:
+                if args.expect_exclusion_sha256.lower() != excl_sha.lower():
+                    rep.err(f"排除清单版本不匹配：期望 "
+                            f"{args.expect_exclusion_sha256[:16]}…，实际 {excl_sha[:16]}…"
+                            f" 【正式验证禁止使用未确认版本的清单】")
             ex_rows, ex_cols = read_csv(args.exclusion)
             if not ex_rows:
                 msg = ("排除清单为空 —— 表5 泄漏检查实际上没有生效。"
                        "拉取到表5 数据后必须回填（可只填哈希列）。")
-                if args.require_exclusion:
-                    rep.err(msg + " 【--require-exclusion 已开：正式交付禁止此状态】")
+                if formal:
+                    rep.err(msg + " 【正式模式：禁止此状态】")
                 else:
                     rep.warn(msg)
             else:

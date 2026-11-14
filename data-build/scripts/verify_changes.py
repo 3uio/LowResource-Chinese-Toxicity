@@ -55,7 +55,7 @@ def item(name, ok, detail=""):
 
 LOG.append("# C 侧代码整改验证日志")
 LOG.append(f"> 生成时间：{datetime.now():%Y-%m-%d %H:%M}")
-LOG.append("> 对应 B 的四条意见与 D 的字段要求（见 docs/11 §三）")
+LOG.append("> 对应 B 的两轮意见（2026-10 与 2026-10-23）与 D 的字段要求（见 docs/11 §三）")
 
 # ---------------------------------------------------------------- 1
 sec("1. homophone_type 判定模块自检（D 要求'具体判定规则和样例'）")
@@ -63,25 +63,31 @@ rc, out = run(["scripts/homophone_type.py"])
 item("14 条样例全部符合预期", rc == 0, out.strip().splitlines()[-1] if out else "")
 
 # ---------------------------------------------------------------- 2
-sec("2. 校验器：--require-exclusion 阻断（B 第 2 条）")
+sec("2. 校验器：正式模式默认阻断（B 2026-10-23 §三.1）")
 rc, out = run(["scripts/validate_schema.py",
-               "--seeds", "examples/pilot_targets.csv",
-               "--require-exclusion"])
-item("缺 --exclusion 时退出码=2（阻断）", rc == 2,
+               "--seeds", "examples/pilot_targets.csv"])
+item("正式模式（默认）不给 --exclusion 时退出码=2（阻断）", rc == 2,
      [l for l in out.splitlines() if "FAIL" in l][:1])
 
 rc, out = run(["scripts/validate_schema.py",
                "--seeds", "examples/pilot_targets.csv",
-               "--exclusion", "data/templates/table5_exclusion_list.csv",
-               "--require-exclusion"])
-item("排除清单为空时退出码=1（阻断）", rc == 1,
+               "--exclusion", "data/templates/table5_exclusion_list.csv"])
+item("正式模式排除清单为空时退出码=1（阻断）", rc == 1,
      [l for l in out.splitlines() if "ERROR" in l][:1])
 
 rc, out = run(["scripts/validate_schema.py",
                "--seeds", "examples/pilot_targets.csv",
-               "--exclusion", "data/templates/table5_exclusion_list.csv"])
-item("未开 --require-exclusion 时仅 warn（本地联调）", rc == 0,
+               "--exclusion", "data/templates/table5_exclusion_list.csv",
+               "--pilot"])
+item("显式 --pilot 时才降级为 warn，且报告标 PILOT（本地联调）", rc == 0,
      [l for l in out.splitlines() if "结果" in l][:1])
+
+# B 2026-10-23 要求「提供调用示例和回归测试」——回归测试单独一个脚本，
+# 这里跑一遍，把结论写进验证日志（18 条断言）。
+rc, out = run(["scripts/test_formal_gate.py"])
+gate_line = [l for l in out.splitlines() if "通过" in l and "/" in l][:1]
+item("正式验证闸门回归测试（scripts/test_formal_gate.py）全部通过", rc == 0,
+     gate_line or [out.strip().splitlines()[-1] if out.strip() else ""])
 
 # ---------------------------------------------------------------- 3
 sec("3. 生成器：内置占位映射隔离（B 第 4 条）")
@@ -166,8 +172,11 @@ if p.exists():
 rc, out = run(["scripts/validate_schema.py",
                "--seeds", "out/seed_candidates.csv",
                "--variants", "out/_vl_real.csv",
-               "--exclusion", "data/templates/table5_exclusion_list.csv"])
-item("schema 校验通过", rc == 0,
+               "--exclusion", "data/templates/table5_exclusion_list.csv",
+               "--pilot"])
+# 这里要验的是「字段与结构是否合法」，不是「能否正式交付」；
+# 表5 排除清单尚未回填，正式模式必然报「排除清单为空」，所以走 pilot。
+item("schema 校验通过（pilot 模式；正式模式会因排除清单未回填而阻断）", rc == 0,
      [l for l in out.splitlines() if "结果" in l][:1])
 
 # ---------------------------------------------------------------- 清理

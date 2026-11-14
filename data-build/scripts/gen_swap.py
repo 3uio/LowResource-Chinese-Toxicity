@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import re
 import sys
 from pathlib import Path
@@ -78,6 +79,8 @@ OUT_COLS = [
     "is_adversarial", "generation_method", "quality_pass", "split",
     "substitution_unit", "homophone_type",
     "swap_mode", "swapped_from", "swapped_to",
+    # 字段级标记（B 2026-10-23）：Swap 不读映射表，mapping_source 恒为 none
+    "is_pilot", "mapping_source", "mapping_version", "generation_batch_id",
 ]
 
 
@@ -180,6 +183,14 @@ def read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(fh))
 
 
+def file_sha(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
@@ -202,6 +213,18 @@ def run(args: argparse.Namespace) -> int:
     modes = ["adjacent", "reverse"] if args.modes == "both" else [args.modes]
     variants, fails = generate(rows, modes, args.swap_family,
                                require_label=not args.allow_non_toxic)
+
+    # ---- 字段级标记（B 2026-10-23）
+    # Swap 只做字符换序、不读任何映射表，所以 mapping_source 恒为 none；
+    # is_pilot 由 --pilot 显式指定（本类没有"占位映射"的概念）。
+    batch_id = args.batch_id or ("gb-swap-" + hashlib.sha256(
+        (file_sha(seeds_path) + "|".join(modes) + args.swap_family
+         + str(args.pilot)).encode("utf-8")).hexdigest()[:10])
+    for v in variants:
+        v["is_pilot"] = 1 if args.pilot else 0
+        v["mapping_source"] = "none"
+        v["mapping_version"] = "none"
+        v["generation_batch_id"] = batch_id
 
     if not args.enable:
         print("[0] 状态：**未启用**（`Swap` 属 Q3 待评审项，默认不产出）")
@@ -229,11 +252,11 @@ def run(args: argparse.Namespace) -> int:
     print(f"[2] attack_family=`{args.swap_family}` - 待 Q3 确认；"
           f"若评审改成新增第四族，只需改 --swap-family 与 schema 里的枚举")
     if fails:
-        print(f"[3] [WARN] {len(fails)} 条种子跳过：")
+        print(f"[3] [WARN] {len(fails)} 条跳过（不算失败，种子仍可用于其他攻击类）：")
         for f in fails[:10]:
             print("      -", f)
-        return 1
-    return 0
+    # 退出码只反映"这批到底出没出东西"：全部种子都被跳过才算失败
+    return 0 if variants else 1
 
 
 # ---------------------------------------------------------------- 自测
@@ -315,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
                     help="attack_family 取值（待 Q3，默认 graphic）")
     ap.add_argument("--allow-non-toxic", action="store_true",
                     help="允许对非毒性种子生成（默认不允许）")
+    ap.add_argument("--pilot", action="store_true",
+                    help="把本批产物标为联调/演示数据（is_pilot=1）；"
+                         "B 2026-10-23 要求正式产物不得含 is_pilot=1")
+    ap.add_argument("--batch-id", default=None,
+                    help="生成批次号；默认由种子文件哈希+模式+族派生")
     ap.add_argument("--enable", action="store_true",
                     help="真正产出文件。不加此开关只预演，不写任何东西")
     ap.add_argument("--self-test", action="store_true", help="跑内置自测")
